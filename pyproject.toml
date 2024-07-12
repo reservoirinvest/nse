@@ -6,14 +6,17 @@ authors = [
     {name = "reservoirinvest", email = "reservoirinvest@gmail.com"},
 ]
 dependencies = [
-    "jugaad-data>=0.26",
     "pandas>=2.2.2",
-    "loguru>=0.7.2",
-    "from-root>=1.3.0",
-    "ipykernel>=6.29.4",
-    "nsepython>=2.8",
-    "ib-async>=1.0.1",
+    "requests>=2.32.3",
     "tqdm>=4.66.4",
+    "jupyterlab>=4.2.3",
+    "loguru>=0.7.2",
+    "ib-async>=1.0.3",
+    "from-root>=1.3.0",
+    "ipykernel>=6.29.5",
+    "jupyterlab-code-formatter>=2.2.1",
+    "black>=24.4.2",
+    "isort>=5.13.2",
 ]
 requires-python = "==3.11.*"
 readme = "README.md"

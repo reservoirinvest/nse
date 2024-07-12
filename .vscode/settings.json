@@ -18,5 +18,6 @@
         "titleBar.activeForeground": "#15202b",
         "titleBar.inactiveBackground": "#80808099",
         "titleBar.inactiveForeground": "#15202b99"
-    }
+    },
+    "jupyter.notebookFileRoot": "${workspaceFolder}"
 }
