@@ -1,7 +1,8 @@
 # Objective
-* Make scripts for running nse independently of IBKR and other broker sites (like Zerodha, SAMCO, etc)
+* Place morning nakeds trades
 
-# Left at: `tests/one_symbol.ipynb`:
-* get lot-sizes
+# Left at: `tests/nakeds.ipynb`
+# Also check `tests/nakeds.ipynb` for downstream nakeds.
+
 
 

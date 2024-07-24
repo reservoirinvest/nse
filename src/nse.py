@@ -1,9 +1,17 @@
+# --- IMPORTS ---
+# ---------------
+
+import asyncio
+import glob
+import io
 import json
 import math
 import pickle
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from itertools import chain
 from pathlib import Path
+from typing import List, Union
 
 import numpy as np
 import pandas as pd
@@ -11,7 +19,7 @@ import pytz
 import requests
 from bs4 import BeautifulSoup
 from from_root import from_root
-from ib_async import IB, MarketOrder, Option, util
+from ib_async import IB, MarketOrder, Option, Order, util
 from loguru import logger
 from pandas import json_normalize
 from scipy.integrate import quad
@@ -21,91 +29,98 @@ from tqdm import tqdm
 # --- CONSTANTS ---
 # -----------------
 
-ROOT = from_root()
+live_port = 3000  # nse
+paper_port = 3001  # nse paper trade
+
+port = PORT = live_port
 
 PUTSTDMULT = 1.8
 CALLSTDMULT = 2.2
-PORT = port = 3000  # nse
-PORT = port = 3001  # nse paper trade
+
+
+# Symbol Maps
+IDX_SYM_HIST_MAP = {"BANKNIFTY": "Nifty Bank", "NIFTY": "Nifty 50"}
+
+ROOT = from_root()
+
 
 # Symbol Maps
 IDX_SYM_HIST_MAP = {"BANKNIFTY": "Nifty Bank", "NIFTY": "Nifty 50"}
 
 # --- MAIN FUNCTION ---
 #----------------------
+# --- MAIN FUNCTION ---
+# ----------------------
 
-def make_earliest_naked_opts(symbol: str, # nse_symbol. can be equity or index
-                   ) -> pd.DataFrame:
 
-    """Make target options for nakeds with earliest expiry"""
+def all_early_fnos(fons: Union[List, set], save: bool = False) -> pd.DataFrame:
+    """Make all early fnos"""
 
-    # Instantiate nse
-    nse = NSEfnos()
-    
-    # Get the basic quote
-    fno_quote = nse.stock_quote_fno(symbol)
+    timer = Timer("Making earliest nakeds")
+    timer.start()
 
-    # make the fno df with iv, hv, lot
-    df_fno = equity_iv_df(fno_quote)
+    dfs = []
 
-    # get margins and commissions from ib
-    df_mcom = get_ib_margin_comms(df_fno)
-    
-    # Get the risk free rate
-    rbi = RBI()
-    risk_free_rate = rbi.repo_rate() / 100
+    for symbol in fnos:
 
-    # Compute the expected price from black_scholes
-    bsPrice = df_mcom.apply(
-        lambda row: black_scholes(
-            S=row["undPrice"],
-            K=row["strike"],
-            T=row["dte"] / 365,  # Convert days to years
-            r=risk_free_rate,
-            sigma=row["iv"],
-            option_type=row["right"],
-        ),
-        axis=1,
-    )
+        try:
+            df_nakeds = make_earliest_naked_opts(symbol)
+        except AttributeError as e:
+            logger.error(e)
+            df_nakeds = None
 
-    # Adjust the expected price precision
-    df = df_mcom.assign(bsPrice=bsPrice.apply(lambda x: get_prec(x, base=0.05)))
-    
-    # get the safe-strike, based on std multiples
-    df_sp = pd.concat(
-        [
-            df.right,
-            pd.Series(df.iv * df.undPrice * (df.dte / 365).apply(math.sqrt), name="sdev"),
-            df.undPrice,
-        ],
-        axis=1,
-    )
-    
-    safe_strike = np.where(
-        df_sp.right == "P",
-        (df_sp.undPrice - df_sp.sdev * PUTSTDMULT).astype('int'),
-        (df_sp.undPrice + df_sp.sdev * CALLSTDMULT).astype('int'),
-    )
-    
-    df = df.assign(safe_strike=safe_strike)
-    
-    
-    # derive expected price from safe_strike
-    df = df.assign(
-        xPrice=abs(df.safe_strike - df.strike).apply(lambda x: get_prec(x, 0.05))
-    )
-    
-    # calculate the return on margin (rom)
-    df = df.assign(rom=df.xPrice * df.lot / df.margin * 365 / df.dte)
-    
-    # Sort by likeliest
-    df_out = df.loc[(df.xPrice / df.price).sort_values().index]
+        dfs.append(df_nakeds)
 
-    return df_out.reset_index(drop=True)
+        # collect dfs and save
+        if dfs:
+            df = pd.concat(dfs, axis=0, ignore_index=True)
+
+            if save:
+                pickle_me(df, ROOT / "data" / "earliest_nakeds.pkl")
+        else:
+            df = dfs
+
+    timer.stop()
+
+    return df
 
 
 # --- UTILITIES ---
-#----------------------
+# ----------------------
+
+
+def get_files_from_patterns(pattern: str = "/*nakeds*") -> list:
+    """Gets list of files from a folder matching pattern given"""
+
+    ROOT = from_root()
+
+    return glob.glob(f"{ROOT / 'data'}{pattern}")
+
+
+def nse_ban_list() -> list:
+    """Gets scrips banned today"""
+
+    url = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
+    headers = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/80.0.3987.149 Safari/537.36",
+        "accept-language": "en,gu;q=0.9,hi;q=0.8",
+        "accept-encoding": "gzip, deflate, br",
+    }
+
+    base_url = "https://www.nseindia.com"
+
+    with requests.Session() as session:
+        request = session.get(base_url, headers=headers, timeout=5)
+        cookies = dict(request.cookies)
+        response = session.get(url, headers=headers, timeout=5, cookies=cookies)
+
+    df = pd.read_csv(io.StringIO(response.text))
+    ban_list = df.iloc[:, 0].tolist()
+
+    return ban_list
 
 
 def live_cache(app_name):
@@ -291,6 +306,40 @@ def clean_index_history(results: list) -> pd.DataFrame:
     df = df.assign(extracted_on=utc_now)
 
     return df
+
+
+def clean_ib_util_df(contracts: Union[list, pd.Series]) -> pd.DataFrame:
+    """Cleans ib_async's util.df to keep only relevant columns"""
+
+    df1 = pd.DataFrame([])  # initialize
+
+    if isinstance(contracts, list):
+        df1 = util.df(contracts)
+    elif isinstance(contracts, pd.Series):
+        try:
+            contract_list = list(contracts)
+            df1 = util.df(contract_list)  # it could be a series
+        except (AttributeError, ValueError):
+            logger.error(f"cannot clean type: {type(contracts)}")
+    else:
+        logger.error(f"cannot clean unknowntype: {type(contracts)}")
+
+    if not df1.empty:
+
+        df1.rename(
+            {"lastTradeDateOrContractMonth": "expiry"}, axis="columns", inplace=True
+        )
+
+        df1 = df1.assign(expiry=pd.to_datetime(df1.expiry))
+        cols = list(df1.columns[:6])
+        cols.append("multiplier")
+        df2 = df1[cols]
+        df2 = df2.assign(contract=contracts)
+
+    else:
+        df2 = None
+
+    return df2
 
 
 def nse2ib(nse_list):
@@ -587,9 +636,7 @@ def make_contracts_orders(
 
 
 def get_ib_margin_comms(df: pd.DataFrame) -> pd.DataFrame:
-    
     """Qualified Contracts, Margins and Commissions from an options df"""
-
 
     symbol = df.ib_symbol.iloc[0]
     df_cos = make_contracts_orders(df)
@@ -626,16 +673,16 @@ def get_ib_margin_comms(df: pd.DataFrame) -> pd.DataFrame:
     return df_opts
 
 
-def black_scholes(S: float, # underlying
-                  K: float, # strike
-                  T: float, # years-to-expiry
-                  r: float, # risk-free rate
-                  sigma: float, # implied volatility
-                  option_type: str,# Put or Call right
-                  ) -> float:
-                  
+def black_scholes(
+    S: float,  # underlying
+    K: float,  # strike
+    T: float,  # years-to-expiry
+    r: float,  # risk-free rate
+    sigma: float,  # implied volatility
+    option_type: str,  # Put or Call right
+) -> float:
     """Black-Scholes Option Pricing Model"""
-    
+
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
 
@@ -647,6 +694,80 @@ def black_scholes(S: float, # underlying
         raise ValueError("Invalid option type. Use 'C' for Call and 'P' for Put.")
 
     return price
+
+
+def make_earliest_naked_opts(
+    symbol: str,  # nse_symbol. can be equity or index
+) -> pd.DataFrame:
+    """Make target options for nakeds with earliest expiry"""
+
+    # Instantiate nse
+    nse = NSEfnos()
+
+    # Get the basic quote
+    fno_quote = nse.stock_quote_fno(symbol)
+
+    # make the fno df with iv, hv, lot
+    df_fno = equity_iv_df(fno_quote)
+
+    # get margins and commissions from ib
+    df_mcom = get_ib_margin_comms(df_fno)
+
+    # Remove zero IVs
+    df_mcom = df_mcom[df_mcom.iv > 0]
+
+    # Get the risk free rate
+    rbi = RBI()
+    risk_free_rate = rbi.repo_rate() / 100
+
+    # Compute the expected price from black_scholes
+    bsPrice = df_mcom.apply(
+        lambda row: black_scholes(
+            S=row["undPrice"],
+            K=row["strike"],
+            T=row["dte"] / 365,  # Convert days to years
+            r=risk_free_rate,
+            sigma=row["iv"],
+            option_type=row["right"],
+        ),
+        axis=1,
+    )
+
+    # Adjust the expected price precision
+    df = df_mcom.assign(bsPrice=bsPrice.apply(lambda x: get_prec(x, base=0.05)))
+
+    # get the safe-strike, based on std multiples
+    df_sp = pd.concat(
+        [
+            df.right,
+            pd.Series(
+                df.iv * df.undPrice * (df.dte / 365).apply(math.sqrt), name="sdev"
+            ),
+            df.undPrice,
+        ],
+        axis=1,
+    )
+
+    safe_strike = np.where(
+        df_sp.right == "P",
+        (df_sp.undPrice - df_sp.sdev * PUTSTDMULT).astype("int"),
+        (df_sp.undPrice + df_sp.sdev * CALLSTDMULT).astype("int"),
+    )
+
+    df = df.assign(safe_strike=safe_strike)
+
+    # derive expected price from safe_strike
+    df = df.assign(
+        xPrice=abs(df.safe_strike - df.strike).apply(lambda x: get_prec(x, 0.05))
+    )
+
+    # calculate the return on margin (rom)
+    df = df.assign(rom=df.xPrice * df.lot / df.margin * 365 / df.dte)
+
+    # Sort by likeliest
+    df_out = df.loc[(df.xPrice / df.price).sort_values().index]
+
+    return df_out.reset_index(drop=True)
 
 
 # --- PICKLE UTILITIES ----
@@ -675,13 +796,139 @@ def get_pickle(path: Path, print_msg: bool = True):
     return output
 
 
+# --- ORDER HANDLING ---
+# -----------------------
+
+
+def place_orders(ib: IB, cos: Union[tuple, list], blk_size: int = 25) -> List:
+    """!!!CAUTION!!!: This places orders in the system
+    ---
+    NOTE: cos could be a single (contract, order)
+          or a tuple/list of ((c1, o1), (c2, o2)...)
+          made using tuple(zip(cts, ords))
+    ---
+    USAGE:
+    ---
+    cos = tuple((c, o) for c, o in zip(contracts, orders))
+    with IB().connect(port=port) as ib:
+        ordered = place_orders(ib=ib, cos=cos)
+    """
+
+    trades = []
+
+    if isinstance(cos, (tuple, list)) and (len(cos) == 2):
+        c, o = cos
+        trades.append(ib.placeOrder(c, o))
+
+    else:
+        cobs = {cos[i : i + blk_size] for i in range(0, len(cos), blk_size)}
+
+        for b in tqdm(cobs):
+            for c, o in b:
+                td = ib.placeOrder(c, o)
+                trades.append(td)
+            ib.sleep(0.75)
+
+    return trades
+
+
+def get_open_orders(ib) -> pd.DataFrame:
+    """Gets open orders - blocking version"""
+
+    ACTIVE_STATUS = "ApiPending, PendingSubmit, PreSubmitted, Submitted".split(",")
+
+    df_openords = OpenOrder().empty()  # Initialize open orders
+
+    trades = ib.reqAllOpenOrders()
+    # trades = ib.trades()
+    # ib.sleep(1) # time to take in all open orders
+
+    if trades:
+
+        all_trades_df = (
+            clean_ib_util_df([t.contract for t in trades])
+            .join(util.df(t.orderStatus for t in trades))
+            .join(util.df(t.order for t in trades), lsuffix="_")
+        )
+
+        order = pd.Series([t.order for t in trades], name="order")
+
+        all_trades_df = all_trades_df.assign(order=order)
+
+        all_trades_df.rename(
+            {"lastTradeDateOrContractMonth": "expiry"}, axis="columns", inplace=True
+        )
+
+        # all_trades_df = all_trades_df[all_trades_df.status.isin(ACTIVE_STATUS)]
+
+        trades_cols = df_openords.columns
+
+        dfo = all_trades_df[trades_cols]
+        # dfo = dfo.assign(expiry=pd.to_datetime(dfo.expiry))
+        df_openords = dfo[dfo.status.isin(ACTIVE_STATUS)]
+
+    return df_openords
+
+
+def cancel_open_orders(ib) -> pd.DataFrame:
+    """!!!Not working!!! --- CHECK"""
+
+    trades = ib.reqAllOpenOrders()  # To kickstart collection of open orders
+    ib.sleep(0.3)
+    trades = ib.trades() # Get the trades
+
+    orders = {t.order for t in trades 
+                if t.orderStatus.status == 'Submitted'
+                   if t.order.action == 'SELL'}
+
+    # df_open_orders = get_open_orders(ib)
+    # ords = df_open_orders.order.to_list()
+
+    BLK = 25
+    ords = list(orders)
+    o_blk = [ords[i:i+BLK] for i in range(0, len(ords), BLK)]
+
+    cancels = []
+
+    for ob in o_blk:
+        cancels.append([ib.cancelOrder(o) for o in ob])
+        ib.sleep(0.3)
+
+    return cancels
+    
+
+def quick_pf(ib) -> Union[None, pd.DataFrame]:
+    """Gets the portfolio dataframe"""
+    pf = ib.portfolio()  # returns an empty [] if there is nothing in the portfolio
+
+    if pf != []:
+        df_pf = util.df(pf)
+        df_pf = (util.df(list(df_pf.contract)).iloc[:, :6]).join(
+            df_pf.drop(columns=["account"])
+        )
+        df_pf = df_pf.rename(
+            columns={
+                "lastTradeDateOrContractMonth": "expiry",
+                "marketPrice": "mktPrice",
+                "marketValue": "mktVal",
+                "averageCost": "avgCost",
+                "unrealizedPNL": "unPnL",
+                "realizedPNL": "rePnL",
+            }
+        )
+    else:
+        df_pf = Portfolio().empty()
+
+    return df_pf
+
+
 # --- CLASSES ---
 # ---------------
 
-class NSEfnos:
 
+class NSEfnos:
     """Class for All NSE FNOS, including Indexes"""
-    
+
     time_out = 5
     base_url = "https://www.nseindia.com/api"
     page_url = "https://www.nseindia.com/get-quotes/equity?symbol=LT"
@@ -817,7 +1064,6 @@ class NSEfnos:
 
         return df
 
-
     def equities(self):
         equities_data = nse.live_fno()
         equities = {kv.get("symbol") for kv in equities_data.get("data")}
@@ -826,6 +1072,7 @@ class NSEfnos:
     def indexes(self):
         x = "NIFTY,BANKNIFTY,MIDCPNIFTY,NIFTYNXT50,FINNIFTY"
         return set(x.split(","))
+
 
 class IDXHistories:
 
@@ -961,12 +1208,10 @@ class Timer:
         """Start a new timer"""
         if self._start_time is not None:
             raise Exception(f"Timer is running. Use .stop() to stop it")
-        
+
         now = datetime.now()
 
-        print(
-            f'\n{self.name} started at {now.strftime("%d-%b-%Y %H: %M:%S")}'
-        )
+        print(f'\n{self.name} started at {now.strftime("%d-%b-%Y %H: %M:%S")}')
 
         self._start_time = datetime.now()
 
@@ -979,16 +1224,66 @@ class Timer:
         # Extract hours, minutes, seconds from the timedelta object
         hours = elapsed_time.seconds // 3600
         minutes = (elapsed_time.seconds % 3600) // 60
-        seconds = elapsed_time.seconds % 60        
+        seconds = elapsed_time.seconds % 60
 
-        print(
-            f"\n...{self.name} took: "
-            + f"{hours:02d}:{minutes:02d}:{seconds:02d}\n"
-        )
+        print(f"\n...{self.name} took: " + f"{hours:02d}:{minutes:02d}:{seconds:02d}\n")
 
         self._start_time = None
 
 
+def empty_the_df(df):
+    """Empty the dataclass df"""
+    empty_df = pd.DataFrame([df.__dict__]).iloc[0:0]
+    return empty_df
+
+
+@dataclass
+class OpenOrder:
+    """
+    Open order template with Dummy data. Use:\n
+    `df = OpenOrder().empty()`
+    """
+
+    conId: int = 0
+    symbol: str = "Dummy"
+    secType: str = "STK"
+    expiry: datetime = datetime.now()
+    strike: float = 0.0
+    right: str = "?"  # Will be 'P' for Put, 'C' for Call
+    orderId: int = 0
+    order: Order = None
+    permId: int = 0
+    action: str = "SELL"  # 'BUY' | 'SELL'
+    totalQuantity: float = 0.0
+    lmtPrice: float = 0.0
+    status: str = None
+
+    def empty(self):
+        return empty_the_df(self)
+
+
+@dataclass
+class Portfolio:
+    """
+    Portfolio template with Dummy data. Use:\n
+    `df = OpenOrder().empty()`
+    """
+
+    conId: int = 0
+    symbol: str = "Dummy"
+    secType: str = "STK"
+    expiry: datetime = datetime.now()
+    strike: float = 0.0
+    right: str = "?"  # Will be 'P' for Put, 'C' for Call
+    position: float = 0.0
+    mktPrice: float = 0.0
+    mktVal: float = 0.0
+    avgCost: float = 0.0
+    unPnL: float = 0.0
+    rePnL: float = 0.0
+
+    def empty(self):
+        return empty_the_df(self)
 
 if __name__ == "__main__":
 
@@ -998,22 +1293,65 @@ if __name__ == "__main__":
     # Initialize FnO class
     nse = NSEfnos()
 
-    fnos = nse.indexes() | nse.equities()
+    # get executed symbols from pickles
+    files = get_files_from_patterns("/*nakeds*")
+    symbols_list = [get_pickle(ROOT / "data" / file).nse_symbol.to_list() for file in files]
+    executed = set(chain.from_iterable(symbols_list))
 
-    dfs = []
+    # get open order symbols
+    with IB().connect(port=port, clientId=10) as ib:
 
-    for symbol in fnos:
+        trades = ib.reqAllOpenOrders()
+        df_openords = get_open_orders(ib)
+        open_orders = set(df_openords.symbol.to_list())
 
-        try:
-            df_nakeds = make_earliest_naked_opts(symbol)
-        except AttributeError as e:
-            logger.error(e)
-            df_nakeds = None
-            
-        dfs.append(df_nakeds)
+    # get the fnos from pickles - if available
 
-        df = pd.concat(dfs, axis=0, ignore_index=True)
+    try:
+        df = pd.concat(
+            [get_pickle(f) for f in files],
+            ignore_index=True,
+        )
 
-        pickle_me(df, ROOT / 'data' / 'earliest_nakeds.pkl')
+        # Sort by safe_strike: strike ratio
+
+        # ... group calls
+        gc = (
+            df[df.right == "C"]
+            .assign(ratio=df.safe_strike / df.strike)
+            .sort_values("ratio")
+            .groupby("ib_symbol")
+        )
+        df_calls = gc.head(2).sort_values(["ib_symbol", "strike"], ascending=[True, False])
+        dfc = df_calls[df_calls.margin < 300000].reset_index(drop=True)
+        dfc = dfc.assign(ratio=dfc.safe_strike / dfc.strike).sort_values("ratio")
+
+        # ... group puts
+        gc = (
+            df[df.right == "P"]
+            .assign(ratio=df.strike / df.safe_strike)
+            .sort_values("ratio")
+            .groupby("ib_symbol")
+        )
+        df_puts = gc.head(2).sort_values(["ib_symbol", "strike"], ascending=[True, False])
+        dfp = df_puts[df_puts.margin < 300000].reset_index(drop=True)
+        dfp = dfp.assign(ratio=dfp.strike / dfp.safe_strike).sort_values("ratio")
+
+        # ... prepare the nakeds to order
+        df_nakeds = pd.concat([dfc, dfp], axis=0, ignore_index=True)
+
+    except ValueError:
+        pass
+
+    # build the fnos list
+    fnos = ((set(["BANKNIFTY", "NIFTY"]) | nse.equities()) - executed) - open_orders
+    fnos = fnos - set(nse_ban_list())    
+
+    # Build the earliest naked options
+
+    if fnos:
+        df_nakeds = all_early_fnos(fnos, save=True)
+
+    print(df_nakeds.head())
 
     timer.stop()
