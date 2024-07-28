@@ -1,0 +1,26 @@
+MARKET: NSE
+
+LOGLEVEL: ERROR
+
+PUTSTDMULT: 1.5
+CALLSTDMULT: 1.5
+MINEXPROM: 1.5
+MARGINPERORDER: 300000
+
+# NSE ports
+PORT: 3000
+LIVE_PORT: 3000
+PAPER_PORT: 3001
+
+# map IB symbols to extract values from https://niftyindices.com
+IDXHISTSYMMAP:
+  BANKNIFTY: Nifty Bank
+  NIFTY: Nifty 50
+
+# For open orders
+ACTIVE_STATUS: 
+- ApiPending
+- PendingSubmit
+- PreSubmitted
+- Submitted
+

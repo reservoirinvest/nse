@@ -6,6 +6,19 @@ authors = [
     {name = "reservoirinvest", email = "reservoirinvest@gmail.com"},
 ]
 dependencies = [
+    "load-dotenv>=0.1.0",
+    "click>=8.1.7",
+]
+requires-python = "==3.11.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.dev-dependencies]
+dev = [
     "pandas>=2.2.2",
     "requests>=2.32.3",
     "tqdm>=4.66.4",
@@ -20,11 +33,5 @@ dependencies = [
     "scipy>=1.14.0",
     "bs4>=0.0.2",
     "matplotlib>=3.9.1",
+    "plotly>=5.23.0",
 ]
-requires-python = "==3.11.*"
-readme = "README.md"
-license = {text = "MIT"}
-
-
-[tool.pdm]
-distribution = false
