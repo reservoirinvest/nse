@@ -7,15 +7,28 @@ CALLSTDMULT: 1.5
 MINEXPROM: 1.5
 MARGINPERORDER: 300000
 
-# NSE ports
+# NSE ports and client IDs
 PORT: 3000
 LIVE_PORT: 3000
 PAPER_PORT: 3001
+
+CID: 10
 
 # map IB symbols to extract values from https://niftyindices.com
 IDXHISTSYMMAP:
   BANKNIFTY: Nifty Bank
   NIFTY: Nifty 50
+
+# map nse symbols to ib formatted symbols
+NSE2IB:
+
+  NIFTY: NIFTY50
+  M&M: MM
+  M&MFIN: MMFIN
+  L&TFH: LTFH
+  Nifty 50: NIFTY50 # ! Does not work cos space is stripped
+  Nifty Bank: BANKNIFTY # ! Does not work cos space is stripped
+
 
 # For open orders
 ACTIVE_STATUS: 

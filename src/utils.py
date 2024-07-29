@@ -55,6 +55,8 @@ class Timer:
 
         self._start_time = None
 
+# --- CONFIGURATION FROM ENVIRONMENT ----
+
 def load_config():
     """Loads configuration from .env and config.yml files."""
 
@@ -328,6 +330,24 @@ def fbfillnas(ser: pd.Series) -> pd.Series:
     s = s.fillna(s.ffill())
 
     return ser.fillna(s)
+
+
+def clean_symbols(symbols: str) -> list:
+    """Cleans a symbol symbol or a list of symbols
+    Arg
+      symbols: in commas eg. 'reliance, sbin' or just 'reliance' 
+    
+    """
+    config = load_config()
+    NSE2IB = config.get('NSE2IB')
+
+    if ',' in symbols[0]:
+        symbols = [s.strip().upper() for s in symbols[0].split(',')]
+        
+    else:
+        symbols = [s.upper() for s in symbols]
+
+    return [NSE2IB.get(s, s) for s in symbols]
 
 
 # --- SEEKING ---
