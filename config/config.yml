@@ -4,8 +4,15 @@ LOGLEVEL: ERROR
 
 PUTSTDMULT: 1.5
 CALLSTDMULT: 1.5
-MINEXPROM: 1.5
+MINEXPROM: 3
 MARGINPERORDER: 300000
+
+# For open orders
+ACTIVE_STATUS: 
+- ApiPending
+- PendingSubmit
+- PreSubmitted
+- Submitted
 
 # NSE ports and client IDs
 PORT: 3000
@@ -29,11 +36,4 @@ NSE2IB:
   Nifty 50: NIFTY50 # ! Does not work cos space is stripped
   Nifty Bank: BANKNIFTY # ! Does not work cos space is stripped
 
-
-# For open orders
-ACTIVE_STATUS: 
-- ApiPending
-- PendingSubmit
-- PreSubmitted
-- Submitted
 

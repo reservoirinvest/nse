@@ -1,7 +1,7 @@
 # --- IBKR API SPECIFIC FUNCTIONS ----
 # ====================================
 
-
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,6 +9,7 @@ from typing import List, Union
 
 import numpy as np
 import pandas as pd
+import timeout_decorator
 from from_root import from_root
 from ib_async import IB, LimitOrder, MarketOrder, Option, Order, util
 from loguru import logger
@@ -84,7 +85,7 @@ def empty_the_df(df):
     return empty_df
 
 
-# --- BLOCKING IB FUNCTIONS ---
+# --- IB BLOCKING FUNCTIONS ---
 
 def get_ib_margin(contract: Option, order: MarketOrder, port: int) -> dict:
     """Gets margin and commission of a contract"""
@@ -144,6 +145,73 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
     return df_opts
 
 
+# --- IB ASYNC FUNCTIONS ---
+
+# *---- Async margins and commissions -----
+
+async def get_one_margin(ib, contract, order, timeout):
+    """Get margin with commissions within a time"""
+
+    try:
+        wif = await asyncio.wait_for(
+            ib.whatIfOrderAsync(contract, order), 
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"{contract.localSymbol} wif timed out!")
+        wif = None
+    return wif
+
+
+def margin_comm(r) -> dict:
+    """Clean a result"""
+
+    if r:
+        margin = float(r.maintMarginChange)
+        comm = min(float(r.commission), float(r.minCommission), float(r.maxCommission))
+        if comm > 1e7:
+            comm = np.nan
+    else:
+        margin = comm = np.nan
+
+    return (margin, comm)
+
+
+async def marginsAsync(ib: IB, df: pd.DataFrame, 
+                       timeout: float = 2, eod: bool = True, 
+                       ist: bool = True) -> pd.DataFrame:
+    """Gets async contracts from a df
+    Args:
+      df: dataframe with `contract` and `order` columns
+      port: ib port
+      timeout: time to wait. ~2 seconds for 10 rows
+    Returns:
+      a Dataframe with same index as input"""
+
+    try:
+        contracts = df.contract.to_list()
+        orders = df.order.to_list()
+    except ValueError as e:
+        logging.error(f"df does not have contract or order.Error: {e}")
+        return pd.DataFrame([])
+
+    # qualify contracts if there is no conId
+    if df.contract.iloc[0].conId == 0:
+        await ib.qualifyContractsAsync(*contracts)
+
+    cos = zip(contracts, orders)
+
+    tasks = [asyncio.create_task(get_one_margin(ib, c, o, timeout)) for c, o in cos]
+
+    results = await asyncio.gather(*tasks)
+
+    mcom = [margin_comm(r) for r in results]
+
+    df1 = pd.DataFrame(mcom, columns=["margin", "comm"])
+    df_mcom = df1.assign(contract=contracts)
+
+    return df_mcom
+
 # --- ORDER HANDLING (BLOCKING) ---
 
 def make_ib_orders(df: pd.DataFrame) -> tuple:
@@ -198,6 +266,8 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
     df_openords = OpenOrder().empty()  # Initialize open orders
 
     trades = ib.reqAllOpenOrders()
+
+    dfo = pd.DataFrame([])
 
     if trades:
 
@@ -261,13 +331,12 @@ def cancel_all(port: int):
         ib.reqGlobalCancel()
 
 
-
-
 if __name__ == "__main__":
 
     port = PORT = config.get('PORT')
 
     with IB().connect(port=port, clientId=10) as ib:
-            df = get_open_orders(ib)
+            out = get_open_orders(ib)
 
+    print(out)
 

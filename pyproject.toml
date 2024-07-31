@@ -9,6 +9,7 @@ dependencies = [
     "load-dotenv>=0.1.0",
     "click>=8.1.7",
     "jupyterlab-git>=0.50.1",
+    "ib-insync>=0.9.86",
 ]
 requires-python = "==3.11.*"
 readme = "README.md"
@@ -36,4 +37,6 @@ dev = [
     "matplotlib>=3.9.1",
     "plotly>=5.23.0",
     "tabulate>=0.9.0",
+    "jedi-language-server>=0.41.4",
+    "timeout-decorator>=0.5.0",
 ]

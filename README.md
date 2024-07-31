@@ -10,11 +10,11 @@
 
 ## To-do
 
-- [ ] make `run.py` with `click` that assembles test nakeds
-- [ ] Function to save IBKR Margins on undPrice closest expiry per symbol
+- [x] make `run.py` with `click` that assembles nakeds
+- [ ] Async function to save IBKR Margins on undPrice closest expiry per symbol
 - [ ] Option to pick up margins from offline
 - [ ] Extend to expiries beyond earliest
-- [ ] Integrate with `option` repository
+- [ ] Make `snp` repository
 
 - [ ] modify an order - from df_nakeds
 - [ ] cancel an order function from df_nakeds if it is ACTIVE
@@ -25,7 +25,7 @@
 - [ ] History function to generate and save
 - [ ] Delta history function to generate and save
 - [ ] Dataclass templates for df_opts (nakeds/targets), df_portfolio and df_orders
-- [ ] Self-sufficient option bot generation
+- [ ] Self-sufficient continuous-monitoring and autonomous option bots
 
 ---
 

@@ -1,6 +1,7 @@
 # --- NSE-SPECIFIC FUNCTIONS ---
 # ==============================
 
+import asyncio
 import io
 import json
 import math
@@ -12,14 +13,17 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from from_root import from_root
+from ib_async import IB
 from loguru import logger
 from pandas import json_normalize
 from tqdm import tqdm
 
-from ibfuncs import get_ib_margin_comms
-from utils import (Timer, black_scholes, convert_to_numeric,
-                   convert_to_utc_datetime, get_dte, get_pickle_suffix,
-                   get_prec, load_config, pickle_me, split_dates)
+from ibfuncs import get_ib_margin_comms, marginsAsync
+from utils import (Timer, append_black_scholes, append_cos,
+                   append_safe_strikes, append_xPrice, black_scholes,
+                   convert_to_numeric, convert_to_utc_datetime, get_dte,
+                   get_pickle_suffix, get_prec, load_config,
+                   merge_and_overwrite_df, pickle_me, split_dates)
 
 ROOT = from_root()
 config = load_config()
@@ -44,33 +48,44 @@ def make_earliest_nakeds(fnos: Union[List, set],
     timer.start()
 
     dfs = []
-    suffix = get_pickle_suffix(pattern="/*nakeds*")
+    suffix = get_pickle_suffix(pattern="*nakeds*")
 
-    for symbol in fnos:
+    with tqdm(total=len(fnos), desc="Making nakeds", unit="symbol") as pbar:
 
-        try:
-            df_nakeds = make_early_opts_for_symbol(symbol, port=port)
-            df_nakeds = df_nakeds[df_nakeds.xPrice > 0]
+        for symbol in fnos:
 
-        except (AttributeError, ValueError) as e:
-            logger.error(e)
-            df_nakeds = None
+            pbar.set_description(f"for: {symbol}")
 
-        dfs.append(df_nakeds)
-
-        # collect dfs and save
-        if dfs:
             try:
-                df = pd.concat(dfs, axis=0, ignore_index=True)
-            except ValueError as e:
-                logger.error(f"No dfs to concat!. Error: {e}")
-                df = pd.DataFrame([])
+                df_nakeds = make_early_opts_for_symbol(symbol, port=port)
+                df_nakeds = df_nakeds[df_nakeds.xPrice > 0]
 
-            if save and not df.empty:
-                filename = str(f"earliest_nakeds{suffix}.pkl")
-                pickle_me(df, ROOT / "data" / "raw" / filename)
-        else:
-            df = dfs
+            except (AttributeError, ValueError) as e:
+                logger.error(e)
+                df_nakeds = None
+
+            dfs.append(df_nakeds)
+
+            # collect dfs and save
+            if dfs:
+                try:
+                    df = pd.concat(dfs, axis=0, ignore_index=True)
+                except ValueError as e:
+                    logger.error(f"No dfs to concat!. Error: {e}")
+                    df = pd.DataFrame([])
+
+                # sort by likeliest
+                if not df.empty:
+                    df = df.loc[(df.xPrice / df.price).sort_values().index]
+
+                if save and not df.empty:
+                    filename = str(f"earliest_nakeds{suffix}.pkl")
+                    pickle_me(df, ROOT / "data" / "raw" / filename)
+            
+            else:
+                df = dfs
+
+            pbar.update(1)
 
     timer.stop()
 
@@ -80,6 +95,7 @@ def make_earliest_nakeds(fnos: Union[List, set],
 def make_early_opts_for_symbol(
     symbol: str,  # nse_symbol. can be equity or index
     port: int,
+    timeout: int=2, # timeout for marginsAsync
         ) -> pd.DataFrame:
     """Make target options for nakeds with earliest expiry
     
@@ -88,94 +104,39 @@ def make_early_opts_for_symbol(
        port: int. Could be LIVE_PORT | PAPER_PORT
        """
 
-    # Instantiate nse
-    nse = NSEfnos()
-
-    # Get the basic quote
-    fno_quote = nse.stock_quote_fno(symbol)
-
-    # make the fno df with iv, hv, lot
-    df_fno = equity_iv_df(fno_quote)
-
-    # get margins and commissions from ib
-    df_mcom = get_ib_margin_comms(df_fno, port=port)
-
-    # Remove zero IVs
-    df_mcom = df_mcom[df_mcom.iv > 0]
-
-    # Remove zero DTEs and create a new df
-    df = df_mcom[df_mcom.dte > 0]
-
-    # Get the risk free rate
+    # initialize and get the base df
+    n = NSEfnos()
+    q = n.stock_quote_fno(symbol)
+    dfe = equity_iv_df(q)
+    
+    # clean up zero IVs and dtes
+    mask = (dfe.iv > 0) & (dfe.dte > 0)
+    df = dfe[mask].reset_index(drop=True)
+    
+    # Append safe strikes
+    df = append_safe_strikes(df)
+    
+    # Append black scholes
+    
     rbi = RBI()
     risk_free_rate = rbi.repo_rate() / 100
+    
+    df = append_black_scholes(df, risk_free_rate)
+    
+    # Append contract, order to prep for margin
+    df = append_cos(df)
+    
+    # Get margins with approrpriate timeout and append
+    with IB().connect(port=port) as ib:
+        df_mcom = ib.run(marginsAsync(ib=ib, df=df, 
+                                           timeout=timeout))
+    
+    df = merge_and_overwrite_df(df, df_mcom)
+    
+    # Append xPrice
+    df = append_xPrice(df)
 
-    # Compute the black_scholes of option strike
-    bsPrice = df_mcom.apply(
-        lambda row: black_scholes(
-            S=row["undPrice"],
-            K=row["strike"],
-            T=row["dte"] / 365,  # Convert days to years
-            r=risk_free_rate,
-            sigma=row["iv"],
-            option_type=row["right"],
-        ),
-        axis=1,
-    )
-
-    # Compute the black_scholes price of safe_strike
-    # get the safe-strike, based on std multiples
-    df_sp = pd.concat(
-        [
-            df,
-            pd.Series(
-                df.iv
-                * df.undPrice
-                * (df.dte / 365).apply(lambda x: math.sqrt(x) if x >= 0 else np.nan),
-                name="sdev",
-            ),
-        ],
-        axis=1,
-    )
-
-    # calculate safe strike with option price added
-    safe_strike = np.where(
-        df_sp.right == "P",
-        (df_sp.undPrice - df_sp.sdev * PUTSTDMULT).astype("int"),
-        (df_sp.undPrice + df_sp.sdev * CALLSTDMULT).astype("int"),
-    )
-
-    df_sp = df_sp.assign(safe_strike=safe_strike)
-
-    # intrinsic value
-    intrinsic = np.where(
-        df_sp.right == "P",
-        (df_sp.strike - df_sp.safe_strike).map(lambda x: max(0, x)),
-        (df_sp.safe_strike - df_sp.strike).map(lambda x: max(0, x)),
-    )
-
-    df_sp = df_sp.assign(intrinsic=intrinsic)
-
-    # compute xPrice based on distance from safe_strike
-    maxPrice = np.maximum(df_sp.price, pd.Series(bsPrice))
-
-    # derive expected price from safe_strike
-    df = df_sp.assign(
-        xPrice=(df_sp.intrinsic + maxPrice).apply(
-            lambda x: max(get_prec(x, 0.05), 0.05)
-        )
-    )
-
-    # prevent divide-by-zero error for rom
-    df = df.assign(margin=np.where(df.margin <= 0, np.nan, df.margin))
-
-    # calculate the return on margin (rom)
-    df = df.assign(rom=df.xPrice * df.lot / df.margin * 365 / df.dte)
-
-    # Sort by likeliest
-    df_out = df.loc[(df.xPrice / df.price).sort_values().index]
-
-    return df_out.reset_index(drop=True)
+    return df
 
 
 def nse_ban_list() -> list:

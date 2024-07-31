@@ -1,5 +1,6 @@
 # --- CLI RUN
 
+import re
 import sys
 from pathlib import Path
 
@@ -8,12 +9,10 @@ import pandas as pd
 from from_root import from_root
 from ib_async import IB
 from loguru import logger
-from tabulate import tabulate
 
-# Set pandas options
-pd.options.display.max_columns = None
-# pd.options.display.max_rows = None
-pd.set_option('display.precision', 2)
+from nse import NSEfnos, make_earliest_nakeds, nse_ban_list
+from utils import (delete_files, get_files_from_patterns, pretty_print_df,
+                   split_and_uppercase, yes_or_no)
 
 # Set the root
 ROOT = from_root()
@@ -37,6 +36,7 @@ def set_module_path(ROOT: Path):
 set_module_path(ROOT=ROOT)
 
 # ---- IMPORT MY MODULES -----
+# ----------------------------
 
 from ibfuncs import get_open_orders, quick_pf
 from nse import NSEfnos
@@ -47,26 +47,24 @@ config = load_config()
 logger.add(sink=ROOT / "log" / "run.log", mode="w", level=config.get('LOGLEVEL'))
 
 # --- CONSTANTS ---
+# -----------------
 
 PORT = port = config.get("PORT")
 CID = config.get("CLIENTID")
 NSE2IB = config.get('NSE2IB')
 
-# --- CLICK FUNCTIONS ---
-
-def pretty_print_df(df):
-  """Pretty prints a pandas DataFrame to the console."""
-  print(tabulate(df, headers='keys', tablefmt='pretty'))
 
 # --- CLICK CHOICES ---
+# ----------------------
 
 @click.group()
 def cli():
     """NSE command line interface"""
     pass
 
-# --- for open orders ---
-@cli.command(name='ib-get-open-orders', help='Shows open orders from IB.')
+# *--- for open orders ---
+
+@cli.command(name='ib-open-orders', help='Shows open orders from IB.')
 @click.argument('symbols', type=str, nargs=-1, required=False)
 @click.option('--active', default=False, help='Needs an active TWS-IB/IBG connection')
 @click.option('--port', default=3000, help='Active IB port')
@@ -94,8 +92,10 @@ def open_ords(symbols, active, port, cid) -> pd.DataFrame:
 
         pretty_print_df(df)
 
-# --- for portfolio ---
-@cli.command(name='ib-get-portfolio', help='Shows current portfolio from IB.')
+
+# *--- for portfolio ---
+
+@cli.command(name='ib-portfolio', help='Shows current portfolio from IB.')
 @click.option('--port', default=3000, help='Active IB port')
 @click.option('--clientId', default=10, help='Active IB Client ID')
 def get_portfolio(port, clientId):
@@ -109,6 +109,44 @@ def get_portfolio(port, clientId):
     """
     with IB().connect(port=port, clientId=clientId) as ib:
         print(quick_pf(ib=ib))
+
+
+# *--- to make earliest nakeds ---
+
+@cli.command(name='ib-early-nakeds', help='Makes earliest nakeds')
+@click.option('--save', default=False, is_flag=True)
+# @click.option('--fnos', default=[], multiple=True, help='List of FNOS (comma-separated).')
+@click.argument('fnos', type=str, nargs=-1, required=False)
+def make_nakeds(save, fnos):
+    """Makes and shows naked options for earliest dte
+    Args:
+       save: True pickles in data/raw folder"""
+
+    if not fnos:
+        files = get_files_from_patterns(ROOT/'data'/ 'raw')
+        if files:
+            ans = yes_or_no("Delete remenants of earliest?")
+            if ans: # Delete the files!
+                delete_files(files)
+
+        nse = NSEfnos()
+        fnos = list(nse.equities())
+    else:
+        fnos = split_and_uppercase(fnos)
+        
+    fnos.sort # sort the list
+
+    df = make_earliest_nakeds(fnos, save=save)
+
+    # print a small sample
+    df_print = df.drop(columns=['contract', 'expiry', 
+                                'instrument', 'ib_symbol'],
+                        errors='ignore')
+    
+    if not df_print.empty:
+        df_print = df_print.groupby('nse_symbol').head(2).head(10)
+
+    pretty_print_df(df_print)
 
 
 if __name__ == "__main__":

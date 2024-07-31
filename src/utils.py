@@ -20,6 +20,7 @@ from ib_async import MarketOrder, Option, util
 from loguru import logger
 from scipy.integrate import quad
 from scipy.stats import norm
+from tabulate import tabulate
 
 
 class Timer:
@@ -36,7 +37,7 @@ class Timer:
 
         now = datetime.now()
 
-        print(f'\n{self.name} started at {now.strftime("%d-%b-%Y %H: %M:%S")}')
+        print(f'\n{self.name} started at {now.strftime("%d-%b-%Y %H:%M:%S")}')
 
         self._start_time = datetime.now()
 
@@ -144,7 +145,7 @@ def delete_files(file_paths):
             print(f"Error deleting file: {file_path}, {e}")
 
 
-def get_pickle_suffix(pattern: str = "/*nakeds*"):
+def get_pickle_suffix(pattern: str = "*nakeds*"):
     """Checks pickle file name suffix and gets the next digit"""
 
     def extract_suffix(file):
@@ -153,7 +154,7 @@ def get_pickle_suffix(pattern: str = "/*nakeds*"):
         except ValueError:
             return 0
 
-    files = get_files_from_patterns(pattern)
+    files = get_files_from_patterns(pattern=pattern)
     suffixes = [extract_suffix(file) for file in files]
     return max(suffixes) + 1 if suffixes else 1
 
@@ -228,73 +229,77 @@ def split_dates(days: int = 365, chunks: int = 50) -> list:
     return date_ranges
 
 
-def clean_ib_util_df(contracts: Union[list, pd.Series]) -> pd.DataFrame:
+def chunk_me(data: list, size: int=25) -> list:
+    """cuts the list into chunks"""
+
+    if type(data) is not list:
+        logger.error(f"Data type needs to be a `list`, not {type(data)}")
+        output = None
+    else:
+        output = [data[x: x+size] for x in range(0, len(data), size)]
+
+    return output
+
+
+def clean_ib_util_df(contracts: Union[list, pd.Series], eod=True, ist=True) -> Union[pd.DataFrame, None]:
     """Cleans ib_async's util.df to keep only relevant columns"""
+    
+    if isinstance(contracts, pd.Series):
+        contracts = contracts.to_list()
+        
+    try:
+        udf = util.df(contracts)
+    except (AttributeError, ValueError) as e:
+        logger.error(f"cannot clean {type(contracts)} type. Have to be list or series")
+        udf = None
+    
+    if not udf.empty:
+        udf = udf[['symbol', 'conId', 'secType', 'lastTradeDateOrContractMonth','strike', 'right',]]
+        
+        udf.rename({"lastTradeDateOrContractMonth": "expiry"}, 
+                   axis="columns", inplace=True)
+        
+        udf = udf.assign(expiry=udf.expiry.
+                         apply(lambda x: 
+                           convert_to_utc_datetime(x, eod=eod, ist=ist)))
+        
+        udf = udf.assign(contract=contracts)
 
-    df1 = pd.DataFrame([])  # initialize
+    return udf
 
-    if isinstance(contracts, list):
-        df1 = util.df(contracts)
-    elif isinstance(contracts, pd.Series):
+
+def convert_to_utc_datetime(date_string, eod=False, ist=True):
+
+    """Converts string dates to UTC time.
+    Args:
+      date_string: in various formats
+      eod: forces date to end of day for option expiries
+      ist: Indian Standard Time if true. Else it is NY time"""
+
+    formats = ["%Y%m%d", "%Y%m%d %H:%M:%S UTC", "%d-%b-%Y", "%d %b %Y", "%Y-%m-%d %H:%M:%S.%f%z", "%Y%m%d"]
+    for fmt in formats:
         try:
-            contract_list = list(contracts)
-            df1 = util.df(contract_list)  # it could be a series
-        except (AttributeError, ValueError):
-            logger.error(f"cannot clean type: {type(contracts)}")
-    else:
-        logger.error(f"cannot clean unknowntype: {type(contracts)}")
-
-    if not df1.empty:
-
-        df1.rename(
-            {"lastTradeDateOrContractMonth": "expiry"}, axis="columns", inplace=True
-        )
-
-        df1 = df1.assign(expiry=pd.to_datetime(df1.expiry))
-        cols = list(df1.columns[:6])
-        cols.append("multiplier")
-        df2 = df1[cols]
-        df2 = df2.assign(contract=contracts)
-
-    else:
-        df2 = None
-
-    return df2
-
-
-def convert_to_utc_datetime(date_string, eod=False):
-    """Converts nse date strings to utc datetimes. If eod is chosen 3:30 PM IST is taken."""
-
-    # List of possible date formats
-    date_formats = ["%d-%b-%Y", "%d %b %Y", "%Y-%m-%d %H:%M:%S.%f%z"]
-
-    for date_format in date_formats:
-        try:
-            dt = datetime.strptime(date_string, date_format)
-
-            # If the parsed datetime doesn't have timezone info, assume it's UTC
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=pytz.UTC)
-            else:
-                # If it has timezone info, convert to UTC
-                dt = dt.astimezone(pytz.UTC)
-
-            if eod:
-                # Set time to 3:30 PM India time for all formats when eod is True
-                india_time = time(hour=15, minute=30)
-                india_tz = pytz.timezone("Asia/Kolkata")
-                dt = india_tz.localize(datetime.combine(dt.date(), india_time))
-                dt = dt.astimezone(pytz.UTC)
-            elif dt.time() == time(0, 0):  # If time is midnight (00:00:00)
-                # Keep it as midnight UTC
-                dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-
-            return dt
+            dt = datetime.strptime(date_string, fmt)
+            break
         except ValueError:
-            continue
+            pass
+    else:
+        raise ValueError("Invalid date string format")
 
-    # If none of the formats work, raise an error
-    raise ValueError(f"Unable to parse date string: {date_string}")
+    if eod:
+        if ist:
+            timezone = pytz.timezone("Asia/Kolkata")
+            dt = dt.replace(hour=15, minute=30, second=0)
+        else:
+            timezone = pytz.timezone("America/New_York")
+            dt = dt.replace(hour=16, minute=0, second=0)
+            
+        dt = timezone.localize(dt)
+
+    utc_timezone = pytz.timezone("UTC")
+    dt_utc = dt.astimezone(utc_timezone)
+    
+    return dt_utc
 
 
 def convert_to_numeric(col: pd.Series):
@@ -350,9 +355,32 @@ def clean_symbols(symbols: str) -> list:
     return [NSE2IB.get(s, s) for s in symbols]
 
 
+def merge_and_overwrite_df(df1, df2):
+  """Merges df2 into df1, overwriting common columns and preserving order.
+
+  Args:
+    df1: The base DataFrame.
+    df2: The DataFrame to merge into df1.
+
+  Returns:
+    The merged DataFrame.
+  """
+
+  # Identify columns unique to df2
+  new_cols = df2.columns.difference(df1.columns)
+
+  # Merge df1 and df2 on index, using outer join to include all columns
+  merged_df = pd.merge(df1, df2[new_cols], left_index=True, right_index=True, how='outer')
+
+  # Reorder columns to match df1
+  merged_df = merged_df[df1.columns.tolist() + new_cols.tolist()]
+
+  return merged_df
+
+
 # --- SEEKING ---
 
-def find_closest_strike(df, above=False):
+def get_closest_strike(df, above=False):
     """
     Finds the row with the strike closest to the undPrice.
 
@@ -426,6 +454,115 @@ def get_prec(v: float, base: float) -> float:
         output = None
 
     return output
+
+
+# --- APPENDING TO DATAFRAMES ---
+
+def append_safe_strikes(df: pd.DataFrame) -> pd.DataFrame:
+    """Appends safe-strikes and intrinsics from iv, undPrice and dte"""
+
+    config = load_config()
+
+    PUTSTDMULT = config.get("PUTSTDMULT")
+    CALLSTDMULT = config.get("CALLSTDMULT")
+
+    sdev = pd.Series(
+                df.iv
+                * df.undPrice
+                * (df.dte / 365).apply(lambda x: math.sqrt(x) 
+                                       if x >= 0 else np.nan), name="sdev")
+    
+    df_sp = merge_and_overwrite_df(df, sdev.to_frame())
+
+    # calculate safe strike with option price added
+    safe_strike = np.where(
+        df_sp.right == "P",
+        (df_sp.undPrice - df_sp.sdev * PUTSTDMULT).astype("int"),
+        (df_sp.undPrice + df_sp.sdev * CALLSTDMULT).astype("int"),
+    )
+
+    df_sp = df_sp.assign(safe_strike=safe_strike)
+
+    # intrinsic value
+    intrinsic = np.where(
+        df_sp.right == "P",
+        (df_sp.strike - df_sp.safe_strike).map(lambda x: max(0, x)),
+        (df_sp.safe_strike - df_sp.strike).map(lambda x: max(0, x)),
+    )
+
+    df_sp = df_sp.assign(intrinsic=intrinsic)
+
+    return df_sp
+
+
+def append_black_scholes(df: pd.DataFrame, risk_free_rate: float) -> pd.DataFrame:
+    """Appends black_scholed price to df
+    Args:
+       df: with undPrice, strike, right, iv and dte
+       risk_free_rate: in decimals (e.g. 0.06 for 6%)"""
+
+    # Compute the black_scholes of option strike
+    bsPrice = df.apply(
+        lambda row: black_scholes(
+            S=row["undPrice"],
+            K=row["strike"],
+            T=row["dte"] / 365,  # Convert days to years
+            r=risk_free_rate,
+            sigma=row["iv"],
+            option_type=row["right"],
+        ),
+        axis=1,
+    )
+
+    if isinstance(bsPrice, pd.DataFrame):
+        if bsPrice.empty:
+            df_out = df.assign(bsPrice=np.nan)
+    else:
+        df_out = df.assign(bsPrice=bsPrice)
+
+    return df_out
+
+
+def append_cos(df: pd.DataFrame) -> pd.DataFrame:
+
+    """Append contract and order fields"""
+
+    dfo = make_contracts_orders(df)
+    df = df.assign(contract=dfo.contract, order=dfo.order)
+
+    return df
+
+
+def append_xPrice(df: pd.DataFrame) -> pd.DataFrame:
+
+    """Append expected price, filter minimum rom and sort by likeliest"""
+
+    # remove order column
+    df = df.drop(columns=['order'], errors='ignore')
+    
+    # get maxprice
+    maxPrice = np.maximum(df.price, df.bsPrice)
+    
+    # get expected price
+    xPrice = (df.intrinsic + maxPrice).apply(lambda x: max(get_prec(x, 0.05), 0.05))
+    df = df.assign(xPrice = xPrice)
+    
+    # prevent divide by zero for rom
+    margin = np.where(df.margin <= 0, np.nan, df.margin)
+    
+    # calculate rom
+    rom = df.xPrice * df.lot / margin * 365 / df.dte
+    df = df.assign(rom=rom)
+
+    # ensure minimum expected ROM
+    config = load_config()
+    MINEXPROM = config.get('MINEXPROM')
+    df = df[df.rom > MINEXPROM].reset_index(drop=True)
+
+    # sort by likeliest
+    df = df.loc[(df.xPrice / df.price).sort_values().index]
+
+    return df
 
 
 # --- BUILDING ---
@@ -525,6 +662,7 @@ def arrange_orders(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
 
     return df_nakeds
 
+
 # --- COMPUTATIONS ---
 
 def black_scholes(
@@ -571,6 +709,27 @@ def arrange_df_columns(df: pd.DataFrame, col_map: str) -> list:
         cols = [s for s in v if s in df.columns]
         
     return cols
+
+
+def pretty_print_df(df):
+    """Pretty prints a pandas DataFrame to the console."""
+    if not df.empty:
+        headers = df.columns.tolist()
+        print(tabulate(df, headers='keys',
+            floatfmt=".2f",))
+    else:
+        print("Nothing to print!!\n")
+
+def split_and_uppercase(s):
+    if isinstance(s, (tuple, set)):
+        # If it's a tuple or set, process each element
+        result = []
+        for item in s:
+            result.extend(re.split(r'[,\s]+', item))
+        return [item.upper() for item in result if item]
+    else:
+        # If it's a single string, process it directly
+        return [item.upper() for item in re.split(r'[,\s]+', s) if item]
 
 # --- TEST BENCH --- 
 
