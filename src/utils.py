@@ -8,7 +8,7 @@ import pickle
 import re
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Union
+from typing import Union, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,8 @@ from loguru import logger
 from scipy.integrate import quad
 from scipy.stats import norm
 from tabulate import tabulate
+
+ROOT = from_root()
 
 
 class Timer:
@@ -55,6 +57,17 @@ class Timer:
         print(f"\n...{self.name} took: " + f"{hours:02d}:{minutes:02d}:{seconds:02d}\n")
 
         self._start_time = None
+
+
+class Timediff:
+    """Stores time difference for file_age."""
+    def __init__(self, td: timedelta, days: int, hours: int, minutes: int, seconds: float):
+        self.td = td
+        self.days = days
+        self.hours = hours
+        self.minutes = minutes
+        self.seconds = seconds
+
 
 # --- CONFIGURATION FROM ENVIRONMENT ----
 
@@ -192,6 +205,49 @@ def get_files_from_patterns(log_path = None, pattern: str = "*nakeds*") -> list:
 
     return result
 
+def get_file_age(file_path: Path) -> Optional[Timediff]:
+    """Gets age of a file in timedelta and d,h,m,s."""
+    if not file_path.exists():
+        logger.info(f"{file_path} file is not found")
+        return None
+
+    file_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+    time_now = datetime.now()
+    td = time_now - file_time
+
+    return split_time_difference(td)
+
+def split_time_difference(diff: timedelta) -> Timediff:
+    """Splits time difference into days, hours, minutes, seconds."""
+    days = diff.days
+    hours, remainder = divmod(diff.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    seconds += diff.microseconds / 1e6
+
+    return Timediff(diff, days, hours, minutes, seconds)
+
+
+def how_many_days_old(file_path) -> float:
+    """Gets the file's age in days"""
+    file_age = get_file_age(file_path=file_path)
+    
+    seconds_in_a_day = 86400
+    file_age_in_days = file_age.td.total_seconds() / seconds_in_a_day if file_age else 0
+    
+    return file_age_in_days
+
+def pickle_with_age_check(obj: dict, file_name_with_path: Path, minimum_age_in_days: float = 1) -> None:
+    """Pickles an object after checking file age."""
+    existing_file_age = get_file_age(file_name_with_path)
+    
+    seconds_in_a_day = 86400  # 24 * 60 * 60
+    file_age_in_days = existing_file_age.td.total_seconds() / seconds_in_a_day if existing_file_age else 0
+
+    if existing_file_age is None or file_age_in_days >= minimum_age_in_days:
+        pickle_me(obj, file_name_with_path)
+        logger.info(f"Pickled object to {file_name_with_path}")
+    else:
+        logger.info(f"Not pickled as {file_name_with_path}'s age {file_age_in_days:.2f} days is < {minimum_age_in_days}")
 
 def handle_raws(): 
     raw_files = get_files_from_patterns()
@@ -229,16 +285,27 @@ def split_dates(days: int = 365, chunks: int = 50) -> list:
     return date_ranges
 
 
-def chunk_me(data: list, size: int=25) -> list:
-    """cuts the list into chunks"""
+def chunk_me(data, size: int = 25) -> list:
+    """
+    Chunks the given data into smaller chunks of specified size.
 
-    if type(data) is not list:
-        logger.error(f"Data type needs to be a `list`, not {type(data)}")
-        output = None
-    else:
-        output = [data[x: x+size] for x in range(0, len(data), size)]
+    Args:
+        data: The data to be chunked. Can be a list, pd.Series, pd.DataFrame, or set.
+        size: The desired size of each chunk. Defaults to 25.
 
-    return output
+    Returns:
+        A list of chunks, or None if the data type is not supported.
+    """
+    
+    if isinstance(data, (list, pd.Series, pd.DataFrame)):
+        return [data[i:i + size] for i in range(0, len(data), size)]
+    elif isinstance(data, set):
+        data_list = list(data)
+        return [data_list[i:i + size] for i in range(0, len(data_list), size)]
+    
+    logger.error(f"Data type needs to be a list, pd.Series, pd.DataFrame, or set, not {type(data)}")
+    return None
+
 
 
 def clean_ib_util_df(contracts: Union[list, pd.Series], eod=True, ist=True) -> Union[pd.DataFrame, None]:
@@ -380,31 +447,36 @@ def merge_and_overwrite_df(df1, df2):
 
 # --- SEEKING ---
 
-def get_closest_strike(df, above=False):
+def get_closest_strike(df, above=None):
     """
     Finds the row with the strike closest to the undPrice.
 
     Parameters:
     df (pd.DataFrame): The input DataFrame.
-    above (bool): If True, find the closest strike above undPrice. If False, find the closest strike below undPrice.
+    above (bool or None): If True, find the closest strike above undPrice.
+                         If False, find the closest strike below undPrice.
+                         If None, find the closest strike regardless of direction.
 
     Returns:
     pd.DataFrame: A DataFrame with the single row that has the closest strike.
     """
     undPrice = df["undPrice"].iloc[0]  # Get the undPrice from the first row
 
-    if above:
-        # Filter for strikes above undPrice
-        mask = df["strike"] > undPrice
+    if above is not None:
+        # Filter for strikes above or below undPrice based on the above parameter
+        mask = df["strike"] > undPrice if above else df["strike"] < undPrice
     else:
-        # Filter for strikes below undPrice
-        mask = df["strike"] < undPrice
+        # No filtering if above is None
+        mask = None
 
-    if not mask.any():
+    if mask is not None and not mask.any():
         return pd.DataFrame()  # Return an empty DataFrame if no rows match the criteria
 
+    if mask is not None:
+        df = df[mask]
+
     # Calculate the absolute difference between strike and undPrice
-    diff = np.abs(df.loc[mask, "strike"] - undPrice)
+    diff = np.abs(df["strike"] - undPrice)
 
     # Find the index of the row with the minimum difference
     closest_index = diff.idxmin()

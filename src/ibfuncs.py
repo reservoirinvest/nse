@@ -15,8 +15,9 @@ from ib_async import IB, LimitOrder, MarketOrder, Option, Order, util
 from loguru import logger
 from tqdm import tqdm
 
-from utils import (clean_ib_util_df, get_files_from_patterns, get_pickle,
-                   load_config, make_contracts_orders)
+from utils import (arrange_orders, clean_ib_util_df, get_files_from_patterns,
+                   get_pickle, handle_raws, load_config, make_contracts_orders,
+                   pickle_me)
 
 ROOT = from_root()
 config = load_config()
@@ -214,6 +215,62 @@ async def marginsAsync(ib: IB, df: pd.DataFrame,
 
 # --- ORDER HANDLING (BLOCKING) ---
 
+
+def order_nakeds(df_opts:pd.DataFrame, port=int) -> list:
+    """Order nakeds
+    Args:
+       df_opts: df of option orders to be placed
+       port: IB port for ordering"""
+    
+    config = load_config()
+    MARGINPERORDER = config.get('MARGINPERORDER')
+
+    # Check raw foder for remnants and process
+    handle_raws()
+
+    # Check open orders and make removal list
+    with IB().connect(port=port, clientId=10) as ib:
+        dfo = get_open_orders(ib)
+        dfp = quick_pf(ib)
+
+    if not dfo.empty:
+        remove_opens = set(dfo.symbol.to_list())
+    else:
+        remove_opens = set()
+
+    # make a list of symbols to be removed from df_opts
+
+    if not dfp.empty:
+        remove_positions = set(dfp.symbol.to_list())
+    else:
+        remove_positions = set()
+
+    remove_ib_syms = remove_opens | remove_positions
+
+    # get the target options to plant
+    dft = df_opts[~df_opts.ib_symbol.isin(remove_ib_syms)].reset_index(drop=True)
+
+    df_nakeds = arrange_orders(dft, maxmargin=MARGINPERORDER)
+    cos = make_ib_orders(df_nakeds)
+
+    # place the orders
+    if cos:
+        with IB().connect(port=port, clientId=10) as ib:
+            ordered = place_orders(ib=ib, cos=cos)
+        pass
+    else:
+        logger.info(f"Nothing to order!")
+        ordered = []
+
+    # timestamp and archive the orders
+    if ordered:
+        filename = f"{datetime.now().strftime('%Y%m%d_%I_%M_%p')}_naked_orders.pkl"
+        pickle_me(ordered, str(ROOT / "data" / "xn_history" / str(filename)))
+
+        logger.info(f"Successfully placed {len(ordered)} orders")
+
+    return ordered
+
 def make_ib_orders(df: pd.DataFrame) -> tuple:
     """Make (contract, order) tuples"""
 
@@ -285,16 +342,12 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
             {"lastTradeDateOrContractMonth": "expiry"}, axis="columns", inplace=True
         )
 
-        # all_trades_df = all_trades_df[all_trades_df.status.isin(ACTIVE_STATUS)]
-
         trades_cols = df_openords.columns
 
         dfo = all_trades_df[trades_cols]
 
         if is_active:
             dfo = dfo[dfo.status.isin(ACTIVE_STATUS)]
-
-        # dfo = dfo.assign(expiry=pd.to_datetime(dfo.expiry))
 
     return dfo
 

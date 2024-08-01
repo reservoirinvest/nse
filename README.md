@@ -11,7 +11,8 @@
 ## To-do
 
 - [x] make `run.py` with `click` that assembles nakeds
-- [ ] Async function to save IBKR Margins on undPrice closest expiry per symbol
+- [x] Function to save IBKR Margins on expiry closest to undPrice per symbol
+- [x] Order placement after cleanup notebook
 - [ ] Option to pick up margins from offline
 - [ ] Extend to expiries beyond earliest
 - [ ] Make `snp` repository

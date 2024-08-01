@@ -2,9 +2,9 @@ MARKET: NSE
 
 LOGLEVEL: ERROR
 
-PUTSTDMULT: 1.5
-CALLSTDMULT: 1.5
-MINEXPROM: 3
+PUTSTDMULT: 1.65
+CALLSTDMULT: 1.8
+MINEXPROM: 4
 MARGINPERORDER: 300000
 
 # For open orders
@@ -25,15 +25,22 @@ CID: 10
 IDXHISTSYMMAP:
   BANKNIFTY: Nifty Bank
   NIFTY: Nifty 50
+  NIFTYNE50: Nifty Next 50
 
 # map nse symbols to ib formatted symbols
 NSE2IB:
 
   NIFTY: NIFTY50
+  BANKNIFTY: BANKNIFTY
+  FINNIFTY: NSEFIN
+  MIDCPNIFTY: MIDCAPSEL
+  NIFTYNXT50: NIFTYNE50 # Index only
+  
   M&M: MM
   M&MFIN: MMFIN
   L&TFH: LTFH
   Nifty 50: NIFTY50 # ! Does not work cos space is stripped
   Nifty Bank: BANKNIFTY # ! Does not work cos space is stripped
+  
 
 

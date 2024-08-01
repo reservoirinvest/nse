@@ -48,7 +48,6 @@ def make_earliest_nakeds(fnos: Union[List, set],
     timer.start()
 
     dfs = []
-    suffix = get_pickle_suffix(pattern="*nakeds*")
 
     with tqdm(total=len(fnos), desc="Making nakeds", unit="symbol") as pbar:
 
@@ -79,6 +78,7 @@ def make_earliest_nakeds(fnos: Union[List, set],
                     df = df.loc[(df.xPrice / df.price).sort_values().index]
 
                 if save and not df.empty:
+                    suffix = get_pickle_suffix(pattern="*nakeds*")
                     filename = str(f"earliest_nakeds{suffix}.pkl")
                     pickle_me(df, ROOT / "data" / "raw" / filename)
             
@@ -163,6 +163,41 @@ def nse_ban_list() -> list:
     ban_list = df.iloc[:, 0].tolist()
 
     return ban_list
+
+
+# --- SEEKING ---
+
+def get_all_fno_names() -> set:
+    """All fnos in nse, including index"""
+
+    n = NSEfnos()
+    d = n.stock_quote_fno('NIFTY')
+    fnos = n.equities() | set(d.get('allSymbol'))
+    return fnos
+
+
+def make_raw_fno_df(fnos) -> pd.DataFrame:
+    """Makes all the raw fnos"""
+
+    n = NSEfnos()
+
+    dfs = []
+
+    with tqdm(total=len(fnos), desc='Generating raw fnos', unit='symbol') as pbar:
+        
+        for s in tqdm(fnos, desc='Generating raw fnos'):
+            try:
+                df = equity_iv_df(n.stock_quote_fno(s))
+                dfs.append(df)
+            except Exception as e:
+                logger.error(f"Error for {s} - error: {e}")
+                pass
+
+            pbar.update(1)
+            
+    df = pd.concat(dfs, ignore_index=True)
+
+    return df
 
 
 # ---- CLEANING ---
@@ -305,9 +340,13 @@ def equity_iv_df(quotes: dict) -> pd.DataFrame:
 
     symbol = quotes.get("info").get("symbol")
 
-    lot = (
-        quotes["stocks"][0].get("marketDeptOrderBook").get("tradeInfo").get("marketLot")
-    )
+    try:
+        lot = (quotes["stocks"][0].get("marketDeptOrderBook").get("tradeInfo").get("marketLot"))
+    except IndexError as e:
+        logger.error(f"No lots found for {symbol}!")
+
+        return pd.DataFrame([])
+
 
     undPrice = quotes["underlyingValue"]
 

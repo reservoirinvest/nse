@@ -10,9 +10,9 @@ from from_root import from_root
 from ib_async import IB
 from loguru import logger
 
-from nse import NSEfnos, make_earliest_nakeds, nse_ban_list
+from nse import NSEfnos, make_earliest_nakeds, nse_ban_list, get_all_fno_names
 from utils import (delete_files, get_files_from_patterns, pretty_print_df,
-                   split_and_uppercase, yes_or_no)
+                   split_and_uppercase, yes_or_no, get_pickle)
 
 # Set the root
 ROOT = from_root()
@@ -54,13 +54,65 @@ CID = config.get("CLIENTID")
 NSE2IB = config.get('NSE2IB')
 
 
-# --- CLICK CHOICES ---
-# ----------------------
-
 @click.group()
 def cli():
     """NSE command line interface"""
     pass
+
+# --- CLICK CHOICES ---
+# ----------------------
+
+# *--- to make earliest nakeds ---
+
+@cli.command(name='ib-early-nakeds', help='Makes earliest nakeds')
+@click.option('--save', default=False, is_flag=True)
+# @click.option('--fnos', default=[], multiple=True, help='List of FNOS (comma-separated).')
+@click.argument('fnos', type=str, nargs=-1, required=False)
+def make_nakeds(save, fnos):
+    """Makes and shows naked options for earliest dte
+    Args:
+       save: True pickles in data/raw folder"""
+
+    if not fnos:
+        files = get_files_from_patterns(ROOT/'data'/ 'raw')
+        if files:
+            ans = yes_or_no("Delete remenants of earliest?")
+            fnos = get_all_fno_names()
+
+            if ans: # Delete the files!
+                delete_files(files)
+            else:
+                p = [get_pickle(f) for f in files]
+
+                # remove the remnant symbols from fnos
+                remove = set(pd.concat(p, axis=0, ignore_index=True).nse_symbol.unique())
+                fnos = fnos - remove
+
+        # nse = NSEfnos()
+        # fnos = list(nse.equities())
+
+    else:
+        fnos = split_and_uppercase(fnos)
+        
+    if not isinstance(fnos, list):
+        fnos = list(fnos)
+
+    fnos.sort # sort the list
+
+    df = make_earliest_nakeds(fnos, save=save)
+
+    # print a small sample
+    df_print = df.drop(columns=['contract', 'expiry', 
+                                'instrument', 'ib_symbol'],
+                        errors='ignore')
+    
+    if not df_print.empty:
+        df_print = df_print.groupby('nse_symbol').head(2).head(10)
+
+    pretty_print_df(df_print)
+
+    return df
+
 
 # *--- for open orders ---
 
@@ -92,6 +144,8 @@ def open_ords(symbols, active, port, cid) -> pd.DataFrame:
 
         pretty_print_df(df)
 
+    return df
+
 
 # *--- for portfolio ---
 
@@ -108,46 +162,11 @@ def get_portfolio(port, clientId):
        df
     """
     with IB().connect(port=port, clientId=clientId) as ib:
-        print(quick_pf(ib=ib))
+        df = print(quick_pf(ib=ib))
 
+        pretty_print_df(df)
 
-# *--- to make earliest nakeds ---
-
-@cli.command(name='ib-early-nakeds', help='Makes earliest nakeds')
-@click.option('--save', default=False, is_flag=True)
-# @click.option('--fnos', default=[], multiple=True, help='List of FNOS (comma-separated).')
-@click.argument('fnos', type=str, nargs=-1, required=False)
-def make_nakeds(save, fnos):
-    """Makes and shows naked options for earliest dte
-    Args:
-       save: True pickles in data/raw folder"""
-
-    if not fnos:
-        files = get_files_from_patterns(ROOT/'data'/ 'raw')
-        if files:
-            ans = yes_or_no("Delete remenants of earliest?")
-            if ans: # Delete the files!
-                delete_files(files)
-
-        nse = NSEfnos()
-        fnos = list(nse.equities())
-    else:
-        fnos = split_and_uppercase(fnos)
-        
-    fnos.sort # sort the list
-
-    df = make_earliest_nakeds(fnos, save=save)
-
-    # print a small sample
-    df_print = df.drop(columns=['contract', 'expiry', 
-                                'instrument', 'ib_symbol'],
-                        errors='ignore')
-    
-    if not df_print.empty:
-        df_print = df_print.groupby('nse_symbol').head(2).head(10)
-
-    pretty_print_df(df_print)
-
+    return df
 
 if __name__ == "__main__":
     cli()
