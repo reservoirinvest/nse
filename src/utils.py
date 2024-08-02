@@ -6,14 +6,15 @@ import math
 import os
 import pickle
 import re
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Union, Optional
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
 import pytz
 import yaml
+from dateutil import parser
 from dotenv import load_dotenv
 from from_root import from_root
 from ib_async import MarketOrder, Option, util
@@ -35,7 +36,7 @@ class Timer:
     def start(self):
         """Start a new timer"""
         if self._start_time is not None:
-            raise Exception(f"Timer is running. Use .stop() to stop it")
+            raise ValueError(f"Timer is running. Use .stop() to stop it")
 
         now = datetime.now()
 
@@ -45,7 +46,7 @@ class Timer:
 
     def stop(self) -> None:
         if self._start_time is None:
-            raise Exception(f"Timer is not running. Use .start() to start it")
+            raise ValueError(f"Timer is not running. Use .start() to start it")
 
         elapsed_time = datetime.now() - self._start_time
 
@@ -93,7 +94,7 @@ def load_config():
 
 # --- INTERACTIONS ---
 
-def yes_or_no(question, default="n") -> bool:
+def yes_or_no(question: str, default="n") -> bool:
   """Asks a yes or no question with a default answer.
 
   Args:
@@ -140,7 +141,7 @@ def get_pickle(path: Path, print_msg: bool = True):
     return output
 
 
-def delete_files(file_paths):
+def delete_files(file_paths: Path):
     """Deletes a list or set of files.
 
     Args:
@@ -151,11 +152,11 @@ def delete_files(file_paths):
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-                print(f"Deleted: {file_path}")
+                logger.info(f"Deleted: {file_path}")
             else:
-                print(f"File not found: {file_path}")
+                logger.info(f"File not found: {file_path}")
         except OSError as e:
-            print(f"Error deleting file: {file_path}, {e}")
+            logger.error(f"Error deleting file: {file_path}, {e}")
 
 
 def get_pickle_suffix(pattern: str = "*nakeds*"):
@@ -168,7 +169,7 @@ def get_pickle_suffix(pattern: str = "*nakeds*"):
             return 0
 
     files = get_files_from_patterns(pattern=pattern)
-    suffixes = [extract_suffix(file) for file in files]
+    suffixes = [extract_suffix(str(file)) for file in files]
     return max(suffixes) + 1 if suffixes else 1
 
 
@@ -193,15 +194,18 @@ def remove_raw_nakeds(save: bool=True):
         logger.info(f"Deleted files {files}")
 
 
-def get_files_from_patterns(log_path = None, pattern: str = "*nakeds*") -> list:
+def get_files_from_patterns(file_path = None, pattern: str = "*nakeds*") -> list:
     """Gets list of files of matching pattern from a folder path """
 
     ROOT = from_root()
 
-    if log_path is None: # Defaults to raw data folder
-        log_path = ROOT / 'data' / 'raw'
+    if file_path is None: # Defaults to raw data folder
+        file_path = ROOT / 'data' / 'raw'
 
-    result = glob.glob(str(log_path / pattern))
+    # Use pathlib.Path.glob for pattern matching
+    result = list(Path(file_path).glob(pattern))
+
+    # result = glob.glob(str(file_path / pattern))
 
     return result
 
@@ -227,7 +231,7 @@ def split_time_difference(diff: timedelta) -> Timediff:
     return Timediff(diff, days, hours, minutes, seconds)
 
 
-def how_many_days_old(file_path) -> float:
+def how_many_days_old(file_path: Path) -> float:
     """Gets the file's age in days"""
     file_age = get_file_age(file_path=file_path)
     
@@ -263,24 +267,40 @@ def handle_raws():
 
 # --- TRANSFORMATIONS ---
 
-def split_dates(days: int = 365, chunks: int = 50) -> list:
-    """splits dates into buckets, based on chunks"""
+def to_list(data):
+    """Converts any iterable to a list, and non-iterables to a list with a single element.
 
+    Args:
+        data: The data to be converted.
+
+    Returns:
+        A list containing the elements of the iterable, or a list with the single element if the input is not iterable.
+    """
+
+    try:
+        return list(data)
+    except TypeError:
+        return [data]
+
+def split_dates(days: int = 365, chunks: int = 50) -> list:
+    """Splits dates into buckets based on chunks.
+
+    Args:
+        days: Number of days to split.
+        chunks: Number of chunks to split the days into.
+
+    Returns:
+        A list of tuples with start and end dates for each chunk.
+    """
     end = datetime.today()
-    periods = int(days / chunks)
     start = end - timedelta(days=days)
 
     if days < chunks:
-        date_ranges = [(start, end)]
-    else:
-        dates = pd.date_range(start, end, periods).date
-        date_ranges = list(
-            zip(pd.Series(dates), pd.Series(dates).shift(-1) + timedelta(days=-1))
-        )[:-1]
+        return [(start, end)]
 
-    # remove last tuple having period as NaT
-    if any(pd.isna(e) for element in date_ranges for e in element):
-        date_ranges = date_ranges[:-1]
+    periods = chunks + 1  # We need chunks intervals, so we need chunks + 1 dates
+    dates = pd.date_range(start, end, periods=periods).date
+    date_ranges = list(zip(dates[:-1], dates[1:]))
 
     return date_ranges
 
@@ -311,46 +331,47 @@ def chunk_me(data, size: int = 25) -> list:
 def clean_ib_util_df(contracts: Union[list, pd.Series], eod=True, ist=True) -> Union[pd.DataFrame, None]:
     """Cleans ib_async's util.df to keep only relevant columns"""
     
+    # Ensure contracts is a list
     if isinstance(contracts, pd.Series):
         contracts = contracts.to_list()
-        
+    elif not isinstance(contracts, list):
+        logger.error(f"Invalid type for contracts: {type(contracts)}. Must be list or pd.Series.")
+        return None
+
+    # Try to create DataFrame from contracts
     try:
         udf = util.df(contracts)
     except (AttributeError, ValueError) as e:
-        logger.error(f"cannot clean {type(contracts)} type. Have to be list or series")
-        udf = None
+        logger.error(f"Error creating DataFrame from contracts: {e}")
+        return None
     
-    if not udf.empty:
-        udf = udf[['symbol', 'conId', 'secType', 'lastTradeDateOrContractMonth','strike', 'right',]]
-        
-        udf.rename({"lastTradeDateOrContractMonth": "expiry"}, 
-                   axis="columns", inplace=True)
-        
-        udf = udf.assign(expiry=udf.expiry.
-                         apply(lambda x: 
-                           convert_to_utc_datetime(x, eod=eod, ist=ist)))
-        
-        udf = udf.assign(contract=contracts)
-
+    # Check if DataFrame is empty
+    if udf.empty:
+        return None
+    
+    # Select and rename columns
+    udf = udf[['symbol', 'conId', 'secType', 'lastTradeDateOrContractMonth', 'strike', 'right']]
+    udf.rename(columns={"lastTradeDateOrContractMonth": "expiry"}, inplace=True)
+    
+    # Convert expiry to UTC datetime
+    udf['expiry'] = udf['expiry'].apply(lambda x: convert_to_utc_datetime(x, eod=eod, ist=ist))
+    
+    # Assign contracts to DataFrame
+    udf['contract'] = contracts
+    
     return udf
 
 
 def convert_to_utc_datetime(date_string, eod=False, ist=True):
-
     """Converts string dates to UTC time.
     Args:
       date_string: in various formats
       eod: forces date to end of day for option expiries
       ist: Indian Standard Time if true. Else it is NY time"""
 
-    formats = ["%Y%m%d", "%Y%m%d %H:%M:%S UTC", "%d-%b-%Y", "%d %b %Y", "%Y-%m-%d %H:%M:%S.%f%z", "%Y%m%d"]
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(date_string, fmt)
-            break
-        except ValueError:
-            pass
-    else:
+    try:
+        dt = parser.parse(date_string)
+    except ValueError:
         raise ValueError("Invalid date string format")
 
     if eod:
@@ -360,13 +381,10 @@ def convert_to_utc_datetime(date_string, eod=False, ist=True):
         else:
             timezone = pytz.timezone("America/New_York")
             dt = dt.replace(hour=16, minute=0, second=0)
-            
+        
         dt = timezone.localize(dt)
-
-    utc_timezone = pytz.timezone("UTC")
-    dt_utc = dt.astimezone(utc_timezone)
     
-    return dt_utc
+    return dt.astimezone(pytz.UTC)
 
 
 def convert_to_numeric(col: pd.Series):
@@ -385,23 +403,27 @@ def convert_daily_volatility_to_yearly(daily_volatility, days: float = 252):
 
 
 def fbfillnas(ser: pd.Series) -> pd.Series:
-    """Fills nan in series forwards first and then backwards"""
+    """Fills nans first forwards and then back. Useful for blank ivs."""
 
-    s = ser.copy()
+    return ser.ffill().bfill()
 
-    # Find the first non-NaN value
-    first_non_nan = s.dropna().iloc[0]
+    # # Old Code...
 
-    # Fill first NaN with the first non-NaN value
-    s.iloc[0] = first_non_nan
+    # s = ser.copy()
 
-    # Fill remaining NaN values with the next valid value
-    s = s.fillna(s.bfill())
+    # # Find the first non-NaN value
+    # first_non_nan = s.dropna().iloc[0]
 
-    # Fill remaining NaN values with the previous valid value
-    s = s.fillna(s.ffill())
+    # # Fill first NaN with the first non-NaN value
+    # s.iloc[0] = first_non_nan
 
-    return ser.fillna(s)
+    # # Fill remaining NaN values with the next valid value
+    # s = s.fillna(s.bfill())
+
+    # # Fill remaining NaN values with the previous valid value
+    # s = s.fillna(s.ffill())
+
+    # return ser.fillna(s)
 
 
 def clean_symbols(symbols: str) -> list:
@@ -534,65 +556,57 @@ def append_safe_strikes(df: pd.DataFrame) -> pd.DataFrame:
     """Appends safe-strikes and intrinsics from iv, undPrice and dte"""
 
     config = load_config()
-
     PUTSTDMULT = config.get("PUTSTDMULT")
     CALLSTDMULT = config.get("CALLSTDMULT")
 
-    sdev = pd.Series(
-                df.iv
-                * df.undPrice
-                * (df.dte / 365).apply(lambda x: math.sqrt(x) 
-                                       if x >= 0 else np.nan), name="sdev")
-    
-    df_sp = merge_and_overwrite_df(df, sdev.to_frame())
+    # Calculate standard deviation
+    df['sdev'] = df['iv'] * df['undPrice'] * np.sqrt(df['dte'] / 365)
 
-    # calculate safe strike with option price added
-    safe_strike = np.where(
-        df_sp.right == "P",
-        (df_sp.undPrice - df_sp.sdev * PUTSTDMULT).astype("int"),
-        (df_sp.undPrice + df_sp.sdev * CALLSTDMULT).astype("int"),
-    )
+    # Calculate safe strikes
+    df['safe_strike'] = np.where(df['right'] == "P",
+                                 (df['undPrice'] - df['sdev'] * PUTSTDMULT).astype(int),
+                                 (df['undPrice'] + df['sdev'] * CALLSTDMULT).astype(int))
 
-    df_sp = df_sp.assign(safe_strike=safe_strike)
+    # Calculate intrinsic values
+    df['intrinsic'] = np.where(df['right'] == "P",
+                               np.maximum(df['strike'] - df['safe_strike'], 0),
+                               np.maximum(df['safe_strike'] - df['strike'], 0))
 
-    # intrinsic value
-    intrinsic = np.where(
-        df_sp.right == "P",
-        (df_sp.strike - df_sp.safe_strike).map(lambda x: max(0, x)),
-        (df_sp.safe_strike - df_sp.strike).map(lambda x: max(0, x)),
-    )
+    return df
 
-    df_sp = df_sp.assign(intrinsic=intrinsic)
-
-    return df_sp
 
 
 def append_black_scholes(df: pd.DataFrame, risk_free_rate: float) -> pd.DataFrame:
-    """Appends black_scholed price to df
+    """Appends Black-Scholes price to the DataFrame.
     Args:
-       df: with undPrice, strike, right, iv and dte
-       risk_free_rate: in decimals (e.g. 0.06 for 6%)"""
+       df: DataFrame with columns undPrice, strike, right, iv, and dte.
+       risk_free_rate: Risk-free rate in decimals (e.g., 0.06 for 6%).
+    """
 
-    # Compute the black_scholes of option strike
-    bsPrice = df.apply(
-        lambda row: black_scholes(
-            S=row["undPrice"],
-            K=row["strike"],
-            T=row["dte"] / 365,  # Convert days to years
-            r=risk_free_rate,
-            sigma=row["iv"],
-            option_type=row["right"],
-        ),
-        axis=1,
-    )
+    # Extract necessary columns
+    S = df['undPrice'].values
+    K = df['strike'].values
+    T = df['dte'].values / 365  # Convert days to years
+    r = risk_free_rate
+    sigma = df['iv'].values
+    option_type = df['right'].values
 
-    if isinstance(bsPrice, pd.DataFrame):
-        if bsPrice.empty:
-            df_out = df.assign(bsPrice=np.nan)
-    else:
-        df_out = df.assign(bsPrice=bsPrice)
+    # Calculate d1 and d2
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
 
-    return df_out
+    # Calculate Black-Scholes price
+    call_prices = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    put_prices = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+    # Assign prices based on option type
+    bs_prices = np.where(option_type == 'C', call_prices, put_prices)
+
+    # Append the prices to the DataFrame
+    df['bsPrice'] = bs_prices
+
+    return df
+
 
 
 def append_cos(df: pd.DataFrame) -> pd.DataFrame:

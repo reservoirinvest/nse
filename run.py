@@ -1,6 +1,5 @@
 # --- CLI RUN
 
-import re
 import sys
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from from_root import from_root
 from ib_async import IB
 from loguru import logger
 
-from nse import NSEfnos, make_earliest_nakeds, nse_ban_list, get_all_fno_names
+from nse import make_earliest_nakeds, get_all_fno_names
 from utils import (delete_files, get_files_from_patterns, pretty_print_df,
                    split_and_uppercase, yes_or_no, get_pickle)
 
@@ -39,7 +38,6 @@ set_module_path(ROOT=ROOT)
 # ----------------------------
 
 from ibfuncs import get_open_orders, quick_pf
-from nse import NSEfnos
 from utils import clean_symbols, get_files_from_patterns, load_config
 
 # load configs and set the logger
@@ -66,52 +64,51 @@ def cli():
 
 @cli.command(name='ib-early-nakeds', help='Makes earliest nakeds')
 @click.option('--save', default=False, is_flag=True)
-# @click.option('--fnos', default=[], multiple=True, help='List of FNOS (comma-separated).')
 @click.argument('fnos', type=str, nargs=-1, required=False)
 def make_nakeds(save, fnos):
     """Makes and shows naked options for earliest dte
     Args:
        save: True pickles in data/raw folder"""
+    df = pd.DataFrame()  # Initialize df to avoid reference before assignment error
 
     if not fnos:
-        files = get_files_from_patterns(ROOT/'data'/ 'raw')
+        files = get_files_from_patterns(ROOT / 'data' / 'raw')
         if files:
-            ans = yes_or_no("Delete remenants of earliest?")
-            fnos = get_all_fno_names()
-
-            if ans: # Delete the files!
+            ans = yes_or_no("Delete remnants of earliest?")
+            if ans:  # Delete the files!
                 delete_files(files)
+                fnos = get_all_fno_names()
             else:
                 p = [get_pickle(f) for f in files]
-
-                # remove the remnant symbols from fnos
-                remove = set(pd.concat(p, axis=0, ignore_index=True).nse_symbol.unique())
-                fnos = fnos - remove
-
-        # nse = NSEfnos()
-        # fnos = list(nse.equities())
-
+                remove = set(pd.concat(p, axis=0, ignore_index=True).nse_symbol.to_list())
+                fnos = get_all_fno_names() - remove
+        else:
+            fnos = get_all_fno_names()
     else:
         fnos = split_and_uppercase(fnos)
-        
+
     if not isinstance(fnos, list):
         fnos = list(fnos)
 
-    fnos.sort # sort the list
+    fnos.sort()  # Sort the list
 
-    df = make_earliest_nakeds(fnos, save=save)
+    try:
+        df = make_earliest_nakeds(fnos, save=save)
+    except Exception as e:
+        logger.error(f"Error in make_earliest_nakeds: {e}")
+        click.echo(f"An error occurred: {e}")
+        return df
 
-    # print a small sample
-    df_print = df.drop(columns=['contract', 'expiry', 
-                                'instrument', 'ib_symbol'],
-                        errors='ignore')
-    
+    # Print a small sample
+    df_print = df.drop(columns=['contract', 'expiry', 'instrument', 'ib_symbol'], errors='ignore')
+
     if not df_print.empty:
-        df_print = df_print.groupby('nse_symbol').head(2).head(10)
+        df_print = df_print.groupby('nse_symbol').head(2).iloc[:10]
 
     pretty_print_df(df_print)
 
     return df
+
 
 
 # *--- for open orders ---

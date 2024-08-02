@@ -6,16 +6,20 @@
 4. Class (OOP) based with stock and option bots
 
 ## Left at
-- run.py
+- snp.py
 
 ## To-do
 
-- [x] make `run.py` with `click` that assembles nakeds
-- [x] Function to save IBKR Margins on expiry closest to undPrice per symbol
-- [x] Order placement after cleanup notebook
+- [ ] Make `snp.py` with:
+   - [ ] qualified underlyings
+   - [ ] price, margins and iv for underlyings
+   - [ ] chains for `df_all` options
+   - [ ] 
+
+
 - [ ] Option to pick up margins from offline
 - [ ] Extend to expiries beyond earliest
-- [ ] Make `snp` repository
+
 
 - [ ] modify an order - from df_nakeds
 - [ ] cancel an order function from df_nakeds if it is ACTIVE

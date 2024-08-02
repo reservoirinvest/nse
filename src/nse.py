@@ -37,390 +37,7 @@ CALLSTDMULT = config.get("CALLSTDMULT")
 
 PORT = port = config.get('PORT')
 
-
-# ------ NSE FUNCTIONS ----
-
-def make_earliest_nakeds(fnos: Union[List, set], 
-                         save: bool = False) -> pd.DataFrame:
-    """Make all early fnos"""
-
-    timer = Timer("Making earliest nakeds")
-    timer.start()
-
-    dfs = []
-
-    with tqdm(total=len(fnos), desc="Making nakeds", unit="symbol") as pbar:
-
-        for symbol in fnos:
-
-            pbar.set_description(f"for: {symbol}")
-
-            try:
-                df_nakeds = make_early_opts_for_symbol(symbol, port=port)
-                df_nakeds = df_nakeds[df_nakeds.xPrice > 0]
-
-            except (AttributeError, ValueError) as e:
-                logger.error(e)
-                df_nakeds = None
-
-            dfs.append(df_nakeds)
-
-            # collect dfs and save
-            if dfs:
-                try:
-                    df = pd.concat(dfs, axis=0, ignore_index=True)
-                except ValueError as e:
-                    logger.error(f"No dfs to concat!. Error: {e}")
-                    df = pd.DataFrame([])
-
-                # sort by likeliest
-                if not df.empty:
-                    df = df.loc[(df.xPrice / df.price).sort_values().index]
-
-                if save and not df.empty:
-                    suffix = get_pickle_suffix(pattern="*nakeds*")
-                    filename = str(f"earliest_nakeds{suffix}.pkl")
-                    pickle_me(df, ROOT / "data" / "raw" / filename)
-            
-            else:
-                df = dfs
-
-            pbar.update(1)
-
-    timer.stop()
-
-    return df
-
-
-def make_early_opts_for_symbol(
-    symbol: str,  # nse_symbol. can be equity or index
-    port: int,
-    timeout: int=2, # timeout for marginsAsync
-        ) -> pd.DataFrame:
-    """Make target options for nakeds with earliest expiry
-    
-    Args:
-       symbol: can be equity or index
-       port: int. Could be LIVE_PORT | PAPER_PORT
-       """
-
-    # initialize and get the base df
-    n = NSEfnos()
-    q = n.stock_quote_fno(symbol)
-    dfe = equity_iv_df(q)
-    
-    # clean up zero IVs and dtes
-    mask = (dfe.iv > 0) & (dfe.dte > 0)
-    df = dfe[mask].reset_index(drop=True)
-    
-    # Append safe strikes
-    df = append_safe_strikes(df)
-    
-    # Append black scholes
-    
-    rbi = RBI()
-    risk_free_rate = rbi.repo_rate() / 100
-    
-    df = append_black_scholes(df, risk_free_rate)
-    
-    # Append contract, order to prep for margin
-    df = append_cos(df)
-    
-    # Get margins with approrpriate timeout and append
-    with IB().connect(port=port) as ib:
-        df_mcom = ib.run(marginsAsync(ib=ib, df=df, 
-                                           timeout=timeout))
-    
-    df = merge_and_overwrite_df(df, df_mcom)
-    
-    # Append xPrice
-    df = append_xPrice(df)
-
-    return df
-
-
-def nse_ban_list() -> list:
-    """Gets scrips banned today"""
-
-    url = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
-    headers = {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/80.0.3987.149 Safari/537.36",
-        "accept-language": "en,gu;q=0.9,hi;q=0.8",
-        "accept-encoding": "gzip, deflate, br",
-    }
-
-    base_url = "https://www.nseindia.com"
-
-    with requests.Session() as session:
-        request = session.get(base_url, headers=headers, timeout=5)
-        cookies = dict(request.cookies)
-        response = session.get(url, headers=headers, timeout=5, cookies=cookies)
-
-    df = pd.read_csv(io.StringIO(response.text))
-    ban_list = df.iloc[:, 0].tolist()
-
-    return ban_list
-
-
-# --- SEEKING ---
-
-def get_all_fno_names() -> set:
-    """All fnos in nse, including index"""
-
-    n = NSEfnos()
-    d = n.stock_quote_fno('NIFTY')
-    fnos = n.equities() | set(d.get('allSymbol'))
-    return fnos
-
-
-def make_raw_fno_df(fnos) -> pd.DataFrame:
-    """Makes all the raw fnos"""
-
-    n = NSEfnos()
-
-    dfs = []
-
-    with tqdm(total=len(fnos), desc='Generating raw fnos', unit='symbol') as pbar:
-        
-        for s in tqdm(fnos, desc='Generating raw fnos'):
-            try:
-                df = equity_iv_df(n.stock_quote_fno(s))
-                dfs.append(df)
-            except Exception as e:
-                logger.error(f"Error for {s} - error: {e}")
-                pass
-
-            pbar.update(1)
-            
-    df = pd.concat(dfs, ignore_index=True)
-
-    return df
-
-
-# ---- CLEANING ---
-
-def clean_stock_history(result: list) -> pd.DataFrame:
-    """Cleans output of"""
-
-    df = pd.concat(
-        [pd.DataFrame(r.get("data")) for r in result], axis=0, ignore_index=True
-    )
-
-    # ...clean columns
-
-    mapping = {
-        "CH_SYMBOL": "nse_symbol",
-        "TIMESTAMP": "date",
-        "CH_OPENING_PRICE": "open",
-        "CH_TRADE_HIGH_PRICE": "high",
-        "CH_TRADE_LOW_PRICE": "low",
-        "CH_CLOSING_PRICE": "close",
-        "CH_TOT_TRADED_QTY": "qty_traded",
-        "CH_TOT_TRADED_VAL": "value_traded",
-        "CH_TOTAL_TRADES": "trades",
-        "VWAP": "vwap",
-        "updatedAt": "extracted_on",
-    }
-
-    df = df[[col for col in mapping.keys() if col in df.columns]].rename(
-        columns=mapping
-    )
-
-    # ...convert column datatypes
-
-    astype_map = {
-        **{
-            k: "float"
-            for k in ["open", "high", "low", "close", "value_traded", "trades", "vwap"]
-        },
-        **{"qty_traded": "int"},
-    }
-
-    df = df.astype(astype_map)
-
-    # ...change date columns to utc
-
-    replace_cols = ["date", "extracted_on"]
-    df1 = df[replace_cols].map(lambda x: datetime.fromisoformat(x))
-    df = df.assign(date=df1.date, extracted_on=df1.extracted_on)
-
-    return df
-
-
-def clean_index_history(results: list) -> pd.DataFrame:
-    """cleans index history and builds it as a dataframe"""
-
-    df = pd.concat(
-        [pd.DataFrame(json.loads(r.get("d"))) for r in results], ignore_index=True
-    )
-
-    # clean the df
-
-    # ...drop unnecessary columns
-
-    df = df.drop(df.columns[[0, 1]], axis=1)
-
-    # ...rename
-    df.columns = ["nse_symbol", "date", "open", "high", "low", "close"]
-
-    # ...convert nse_symbol to IB's symbol
-    df = pd.concat(
-        [
-            df.nse_symbol.map(IDXHISTSYMMAP).rename("symbol"),
-            df,
-        ],
-        axis=1,
-    )
-
-    utc_dates = df.date.apply(lambda x: convert_to_utc_datetime(x, eod=True))
-
-    df = df.assign(date=utc_dates)
-
-    # .....convert ohlc to numeric
-    convert_dict = {k: "float" for k in ["open", "high", "low", "close"]}
-
-    df = df.astype(convert_dict)
-
-    # .....sort by date
-    df.sort_values(["nse_symbol", "date"], inplace=True, ignore_index=True)
-
-    # .....add extract_date
-    now = datetime.now()
-    utc_now = now.astimezone(timezone.utc)
-    df = df.assign(extracted_on=utc_now)
-
-    return df
-
-# --- CONVERTING ---
-
-def nse2ib(nse_list):
-    """Converts nse to ib friendly symbols"""
-
-    subs = {"M&M": "MM", "M&MFIN": "MMFIN", "L&TFH": "LTFH", "NIFTY": "NIFTY50"}
-
-    list_without_percent_sign = list(map(subs.get, nse_list, nse_list))
-
-    # fix length to 9 characters
-    ib_equity_fnos = [s[:9] for s in list_without_percent_sign]
-
-    return ib_equity_fnos
-
-
-def make_date_range_for_stock_history(
-    symbol: str, days: int = 365, chunks: int = 50
-) -> list:
-    """Uses `split_dates` to make date range for stock history"""
-
-    date_ranges = split_dates(days=days, chunks=chunks)
-
-    series = "EQ"
-
-    ranges = [
-        {
-            "symbol": symbol,
-            "from": start.strftime("%d-%m-%Y"),
-            "to": end.strftime("%d-%m-%Y"),
-            "series": f'["{series}"]',
-        }
-        for start, end in date_ranges
-    ]
-
-    return ranges
-
-
-def equity_iv_df(quotes: dict) -> pd.DataFrame:
-    """Build a core df with symbol, undPrice, expiry, strike, volatilities, lot and price."""
-
-    flat_data = json_normalize(quotes, sep="-")
-
-    # get symbol, lot and underlying pricefrom quote
-
-    symbol = quotes.get("info").get("symbol")
-
-    try:
-        lot = (quotes["stocks"][0].get("marketDeptOrderBook").get("tradeInfo").get("marketLot"))
-    except IndexError as e:
-        logger.error(f"No lots found for {symbol}!")
-
-        return pd.DataFrame([])
-
-
-    undPrice = quotes["underlyingValue"]
-
-    # build the df
-    df = pd.DataFrame(flat_data)
-
-    df = pd.DataFrame(
-        [
-            {
-                "nse_symbol": symbol,
-                "ib_symbol": symbol,
-                "instrument": quotes.get("stocks")[i]
-                .get("metadata")
-                .get("instrumentType"),
-                "expiry": quotes.get("stocks")[i].get("metadata").get("expiryDate"),
-                "undPrice": undPrice,
-                "safe_strike": 0,
-                "right": quotes.get("stocks")[i].get("metadata").get("optionType")[:1],
-                "strike": quotes.get("stocks")[i].get("metadata").get("strikePrice"),
-                "dte": np.nan,
-                "hv": quotes.get("stocks")[i]
-                .get("marketDeptOrderBook")
-                .get("otherInfo")
-                .get("annualisedVolatility"),
-                "iv": quotes.get("stocks")[i]
-                .get("marketDeptOrderBook")
-                .get("otherInfo")
-                .get("impliedVolatility"),
-                "lot": lot,
-                "price": quotes.get("stocks")[i].get("metadata").get("lastPrice"),
-            }
-            for i in range(len(quotes))
-        ]
-    )
-
-    # Convert nse_symbol to symbol
-    df = df.assign(ib_symbol=nse2ib(df.nse_symbol))
-
-    # Convert expiry to UTC NSE eod
-    df = df.assign(
-        expiry=df.expiry.apply(lambda x: convert_to_utc_datetime(x, eod=True))
-    )
-
-    df = df.assign(dte=get_dte(df.expiry))
-
-    # Convert the rest to numeric
-    df = df.apply(convert_to_numeric)
-
-    # Convert to %ge
-    df.iv = df.iv / 100
-    df.hv = df.hv / 100
-
-    # Change instrument type
-    instrument_dict = {
-        "Stock": "STK",
-        "Options": "OPT",
-        "Currency": "FX",
-        "Index": "IDX",
-        "Futures": "FUT",
-    }
-
-    inst = df.instrument.str.split()
-
-    s = inst.apply(lambda x: "".join(instrument_dict[item] for item in x))
-
-    df = df.assign(instrument=s)
-
-    df = df[df.instrument.isin(["IDXOPT", "STKOPT"])]
-
-    return df
-
-
 # --- NSE CLASSES, METHODS AND DECORATORS ---
-
 
 def live_cache(app_name):
     """Caches the output for time_out specified. This is done in order to
@@ -741,3 +358,362 @@ class RBI:
         rate = self.current_rates().get("Policy Repo Rate")[:-1]
 
         return float(rate)
+
+# Instantiated RBI once to use for make_early_opts_for_symbol
+rbi = RBI()
+risk_free_rate = rbi.repo_rate() / 100
+
+# ------ CORE NSE FUNCTIONS ----
+
+def make_earliest_nakeds(fnos: Union[List, set], 
+                         save: bool = False) -> pd.DataFrame:
+    """Make all early fnos"""
+
+    timer = Timer("Making earliest nakeds")
+    timer.start()
+
+    dfs = []
+
+    with tqdm(total=len(fnos), desc="Making nakeds", unit="symbol") as pbar:
+
+        for symbol in fnos:
+
+            pbar.set_description(f"for: {symbol}")
+
+            try:
+                df_nakeds = make_early_opts_for_symbol(symbol, port=port)
+                df_nakeds = df_nakeds[df_nakeds.xPrice > 0]
+
+            except (AttributeError, ValueError) as e:
+                logger.error(e)
+                df_nakeds = None
+
+            dfs.append(df_nakeds)
+
+            # collect dfs and save
+            if dfs:
+                try:
+                    df = pd.concat(dfs, axis=0, ignore_index=True)
+                except ValueError as e:
+                    logger.error(f"No dfs to concat!. Error: {e}")
+                    df = pd.DataFrame([])
+
+                # sort by likeliest
+                if not df.empty:
+                    df = df.loc[(df.xPrice / df.price).sort_values().index]
+
+                if save and not df.empty:
+                    suffix = get_pickle_suffix(pattern="*nakeds*")
+                    filename = str(f"earliest_nakeds{suffix}.pkl")
+                    pickle_me(df, ROOT / "data" / "raw" / filename)
+            
+            else:
+                df = dfs
+
+            pbar.update(1)
+
+    timer.stop()
+
+    return df
+
+
+# --- SEEKING ---
+
+def make_early_opts_for_symbol(
+    symbol: str,  # nse_symbol. can be equity or index
+    port: int,
+    timeout: int=2, # timeout for marginsAsync
+        ) -> pd.DataFrame:
+    """Make target options for nakeds with earliest expiry
+    
+    Args:
+       symbol: can be equity or index
+       port: int. Could be LIVE_PORT | PAPER_PORT
+       """
+
+    # initialize and get the base df
+    n = NSEfnos()
+    q = n.stock_quote_fno(symbol)
+    dfe = equity_iv_df(q)
+    
+    # clean up zero IVs and dtes
+    mask = (dfe.iv > 0) & (dfe.dte > 0)
+    df = dfe[mask].reset_index(drop=True)
+    
+    # Append safe strikes
+    df = append_safe_strikes(df)
+    
+    # Append black scholes
+    df = append_black_scholes(df, risk_free_rate)
+    
+    # Append contract, order to prep for margin
+    df = append_cos(df)
+    
+    # Get margins with approrpriate timeout and append
+    with IB().connect(port=port) as ib:
+        df_mcom = ib.run(marginsAsync(ib=ib, df=df, 
+                                           timeout=timeout))
+    
+    df = merge_and_overwrite_df(df, df_mcom)
+    
+    # Append xPrice
+    df = append_xPrice(df)
+
+    return df
+
+
+def nse_ban_list() -> list:
+    """Gets scrips banned today"""
+
+    url = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
+    headers = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/80.0.3987.149 Safari/537.36",
+        "accept-language": "en,gu;q=0.9,hi;q=0.8",
+        "accept-encoding": "gzip, deflate, br",
+    }
+
+    base_url = "https://www.nseindia.com"
+
+    with requests.Session() as session:
+        request = session.get(base_url, headers=headers, timeout=5)
+        cookies = dict(request.cookies)
+        response = session.get(url, headers=headers, timeout=5, cookies=cookies)
+
+    df = pd.read_csv(io.StringIO(response.text))
+    ban_list = df.iloc[:, 0].tolist()
+
+    return ban_list
+
+
+def get_all_fno_names() -> set:
+    """All fnos in nse, including index, except banned"""
+
+    n = NSEfnos()
+    d = n.stock_quote_fno('NIFTY')
+    fnos = n.equities() | set(d.get('allSymbol'))
+    fnos = fnos - set(nse_ban_list())
+    return fnos
+
+
+# ---- CLEANING ---
+
+def clean_stock_history(result: list) -> pd.DataFrame:
+    """Cleans output of"""
+
+    df = pd.concat(
+        [pd.DataFrame(r.get("data")) for r in result], axis=0, ignore_index=True
+    )
+
+    # ...clean columns
+
+    mapping = {
+        "CH_SYMBOL": "nse_symbol",
+        "TIMESTAMP": "date",
+        "CH_OPENING_PRICE": "open",
+        "CH_TRADE_HIGH_PRICE": "high",
+        "CH_TRADE_LOW_PRICE": "low",
+        "CH_CLOSING_PRICE": "close",
+        "CH_TOT_TRADED_QTY": "qty_traded",
+        "CH_TOT_TRADED_VAL": "value_traded",
+        "CH_TOTAL_TRADES": "trades",
+        "VWAP": "vwap",
+        "updatedAt": "extracted_on",
+    }
+
+    df = df[[col for col in mapping.keys() if col in df.columns]].rename(
+        columns=mapping
+    )
+
+    # ...convert column datatypes
+
+    astype_map = {
+        **{
+            k: "float"
+            for k in ["open", "high", "low", "close", "value_traded", "trades", "vwap"]
+        },
+        **{"qty_traded": "int"},
+    }
+
+    df = df.astype(astype_map)
+
+    # ...change date columns to utc
+
+    replace_cols = ["date", "extracted_on"]
+    df1 = df[replace_cols].map(lambda x: datetime.fromisoformat(x))
+    df = df.assign(date=df1.date, extracted_on=df1.extracted_on)
+
+    return df
+
+
+def clean_index_history(results: list) -> pd.DataFrame:
+    """cleans index history and builds it as a dataframe"""
+
+    df = pd.concat(
+        [pd.DataFrame(json.loads(r.get("d"))) for r in results], ignore_index=True
+    )
+
+    # clean the df
+
+    # ...drop unnecessary columns
+
+    df = df.drop(df.columns[[0, 1]], axis=1)
+
+    # ...rename
+    df.columns = ["nse_symbol", "date", "open", "high", "low", "close"]
+
+    # ...convert nse_symbol to IB's symbol
+    df = pd.concat(
+        [
+            df.nse_symbol.map(IDXHISTSYMMAP).rename("symbol"),
+            df,
+        ],
+        axis=1,
+    )
+
+    utc_dates = df.date.apply(lambda x: convert_to_utc_datetime(x, eod=True))
+
+    df = df.assign(date=utc_dates)
+
+    # .....convert ohlc to numeric
+    convert_dict = {k: "float" for k in ["open", "high", "low", "close"]}
+
+    df = df.astype(convert_dict)
+
+    # .....sort by date
+    df.sort_values(["nse_symbol", "date"], inplace=True, ignore_index=True)
+
+    # .....add extract_date
+    now = datetime.now()
+    utc_now = now.astimezone(timezone.utc)
+    df = df.assign(extracted_on=utc_now)
+
+    return df
+
+# --- CONVERTING ---
+
+def nse2ib(nse_list):
+    """Converts nse to ib friendly symbols"""
+
+    subs = {"M&M": "MM", "M&MFIN": "MMFIN", "L&TFH": "LTFH", "NIFTY": "NIFTY50"}
+
+    list_without_percent_sign = list(map(subs.get, nse_list, nse_list))
+
+    # fix length to 9 characters
+    ib_equity_fnos = [s[:9] for s in list_without_percent_sign]
+
+    return ib_equity_fnos
+
+
+def make_date_range_for_stock_history(
+    symbol: str, days: int = 365, chunks: int = 50
+) -> list:
+    """Uses `split_dates` to make date range for stock history"""
+
+    date_ranges = split_dates(days=days, chunks=chunks)
+
+    series = "EQ"
+
+    ranges = [
+        {
+            "symbol": symbol,
+            "from": start.strftime("%d-%m-%Y"),
+            "to": end.strftime("%d-%m-%Y"),
+            "series": f'["{series}"]',
+        }
+        for start, end in date_ranges
+    ]
+
+    return ranges
+
+
+def equity_iv_df(quotes: dict) -> pd.DataFrame:
+    """Build a core df with symbol, undPrice, expiry, strike, volatilities, lot and price."""
+
+    flat_data = json_normalize(quotes, sep="-")
+
+    # get symbol, lot and underlying pricefrom quote
+
+    symbol = quotes.get("info").get("symbol")
+
+    try:
+        lot = (quotes["stocks"][0].get("marketDeptOrderBook").get("tradeInfo").get("marketLot"))
+    except IndexError as e:
+        logger.error(f"No lots found for {symbol}!")
+
+        return pd.DataFrame([])
+
+
+    undPrice = quotes["underlyingValue"]
+
+    # build the df
+    df = pd.DataFrame(flat_data)
+
+    df = pd.DataFrame(
+        [
+            {
+                "nse_symbol": symbol,
+                "ib_symbol": symbol,
+                "instrument": quotes.get("stocks")[i]
+                .get("metadata")
+                .get("instrumentType"),
+                "expiry": quotes.get("stocks")[i].get("metadata").get("expiryDate"),
+                "undPrice": undPrice,
+                "safe_strike": 0,
+                "right": quotes.get("stocks")[i].get("metadata").get("optionType")[:1],
+                "strike": quotes.get("stocks")[i].get("metadata").get("strikePrice"),
+                "dte": np.nan,
+                "hv": quotes.get("stocks")[i]
+                .get("marketDeptOrderBook")
+                .get("otherInfo")
+                .get("annualisedVolatility"),
+                "iv": quotes.get("stocks")[i]
+                .get("marketDeptOrderBook")
+                .get("otherInfo")
+                .get("impliedVolatility"),
+                "lot": lot,
+                "price": quotes.get("stocks")[i].get("metadata").get("lastPrice"),
+            }
+            for i in range(len(quotes))
+        ]
+    )
+
+    # Convert nse_symbol to symbol
+    df = df.assign(ib_symbol=nse2ib(df.nse_symbol))
+
+    # Convert expiry to UTC NSE eod
+    df = df.assign(
+        expiry=df.expiry.apply(lambda x: convert_to_utc_datetime(x, eod=True))
+    )
+
+    df = df.assign(dte=get_dte(df.expiry))
+
+    # Convert the rest to numeric
+    df = df.apply(convert_to_numeric)
+
+    # Convert to %ge
+    df.iv = df.iv / 100
+    df.hv = df.hv / 100
+
+    # Change instrument type
+    instrument_dict = {
+        "Stock": "STK",
+        "Options": "OPT",
+        "Currency": "FX",
+        "Index": "IDX",
+        "Futures": "FUT",
+    }
+
+    inst = df.instrument.str.split()
+
+    s = inst.apply(lambda x: "".join(instrument_dict[item] for item in x))
+
+    df = df.assign(instrument=s)
+
+    df = df[df.instrument.isin(["IDXOPT", "STKOPT"])]
+
+    return df
+
+

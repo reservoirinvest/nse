@@ -14,18 +14,21 @@ from from_root import from_root
 from ib_async import IB, LimitOrder, MarketOrder, Option, Order, util
 from loguru import logger
 from tqdm import tqdm
+from tqdm.asyncio import tqdm_asyncio
 
 from utils import (arrange_orders, clean_ib_util_df, get_files_from_patterns,
                    get_pickle, handle_raws, load_config, make_contracts_orders,
-                   pickle_me)
+                   pickle_me, to_list)
 
 ROOT = from_root()
 config = load_config()
 
+LOGLEVEL = config.get('LOGLEVEL')
+
 # --- SETTING LOGS ----
 
 # Set ib_async logs to file, for loguru to capture
-level = logging.getLevelNamesMapping().get(config.get('LOGLEVEL'))
+level = logging.getLevelNamesMapping().get(LOGLEVEL)
 log_file = ROOT / "log" / str(__name__+".log")
 util.logToFile(log_file, level=level)
 open(log_file, "w").close() # Wipe the logfile clean!
@@ -148,6 +151,23 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
 
 # --- IB ASYNC FUNCTIONS ---
 
+# *---- Qualifying ----
+
+async def qualify_me(ib: IB, 
+                     contracts: list,
+                     desc: str = 'Qualifying contracts'):
+    """[async] Qualify contracts asynchronously"""
+
+    contracts = to_list(contracts) # to take care of single contract
+
+    tasks = [asyncio.create_task(ib.qualifyContractsAsync(c), name=c.localSymbol) for c in contracts]
+
+    await tqdm_asyncio.gather(*tasks, desc=desc)
+
+    result = [r for t in tasks for r in t.result()]
+
+    return result
+
 # *---- Async margins and commissions -----
 
 async def get_one_margin(ib, contract, order, timeout):
@@ -213,10 +233,13 @@ async def marginsAsync(ib: IB, df: pd.DataFrame,
 
     return df_mcom
 
+
+
 # --- ORDER HANDLING (BLOCKING) ---
 
 
-def order_nakeds(df_opts:pd.DataFrame, port=int) -> list:
+def order_nakeds(df_opts:pd.DataFrame, port:int, 
+                 how_many:int=2, puts_only:bool=False) -> list:
     """Order nakeds
     Args:
        df_opts: df of option orders to be placed
@@ -250,7 +273,8 @@ def order_nakeds(df_opts:pd.DataFrame, port=int) -> list:
     # get the target options to plant
     dft = df_opts[~df_opts.ib_symbol.isin(remove_ib_syms)].reset_index(drop=True)
 
-    df_nakeds = arrange_orders(dft, maxmargin=MARGINPERORDER)
+    df_nakeds = arrange_orders(dft, maxmargin=MARGINPERORDER, 
+                               how_many=how_many, puts_only=puts_only)
     cos = make_ib_orders(df_nakeds)
 
     # place the orders
