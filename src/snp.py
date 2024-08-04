@@ -2,83 +2,35 @@
 # ===============================
 
 import asyncio
-import os
+import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
-from dotenv import load_dotenv
 from from_root import from_root
-from ib_async import IB, Index, Stock
-from tqdm.asyncio import tqdm_asyncio
+from ib_async import IB, Contract, Index, Option, Stock
+from ib_insync import IB, Contract
+from loguru import logger
+from tqdm.asyncio import tqdm
 
-from ibfuncs import qualify_me as ib_qualify_me
-from utils import load_config as utils_load_config, to_list as utils_to_list
-
-
-# ***** ==== IMPORTS TO OPTIMIZE *****
-async def qualify_me(ib: IB, 
-                     contracts: list,
-                     desc: str = 'Qualifying contracts'):
-    """[async] Qualify contracts asynchronously"""
-
-    contracts = utils_to_list(contracts)  # to take care of single contract
-
-    tasks = [asyncio.create_task(ib.qualifyContractsAsync(c), name=c.localSymbol) for c in contracts]
-
-    await tqdm_asyncio.gather(*tasks, desc=desc)
-
-    result = [r for t in tasks for r in t.result()]
-
-    return result
-
-def load_config():
-    """Loads configuration from .env and config.yml files."""
-
-    # Load environment variables from .env file
-    load_dotenv()
-
-    # Load config from YAML file
-
-    ROOT = from_root()
-    with open(ROOT / "config" / "config.yml", "r") as f:
-        config = yaml.safe_load(f)
-
-    # Merge environment variables with config
-    for key, value in os.environ.items():
-        if key in config:
-            config[key] = value
-
-    return config
-
-
-def to_list(data):
-    """Converts any iterable to a list, and non-iterables to a list with a single element.
-
-    Args:
-        data: The data to be converted.
-
-    Returns:
-        A list containing the elements of the iterable, or a list with the single element if the input is not iterable.
-    """
-
-    try:
-        return list(data)
-    except TypeError:
-        return [data]
+from ibfuncs import qualify_me
+from utils import chunk_me, clean_ib_util_df, get_pickle, load_config, pickle_me, to_list
 
 # ***** ==== (END) IMPORTS TO OPTIMIZE *****
 
 
 ROOT = from_root()
+
+PKL = ROOT / 'data' / 'zpkl'
+
 config = load_config()
 
 # ---- SETTING CONSTANTS ----
 PUTSTDMULT = config.get("PUTSTDMULT")
 CALLSTDMULT = config.get("CALLSTDMULT")
 
-PORT = port = config.get('PORT')
+PORT = port = config.get('SNP_LIVE_PORT')
 
 indexes_path = ROOT/'data'/'templates'/'snp_indexes.yml'
 
@@ -209,9 +161,182 @@ async def assemble_snp_underlyings(port: int) -> dict:
 
     return qualified_contracts
 
+# --- SEEKERS ---
+# ---------------
+
+
+
+
+async def get_tick_data(ib: IB, c: Contract, delay: float = 0):
+    """
+    [async] Gets tick-by-tick data
+    Quick when market is open
+    Takes ~6 secs after market hours.
+    No impliedVolatility
+    
+    Parameters:
+    ib (IB): The IB instance for API interaction.
+    c (Contract): The contract for which to get tick data.
+    delay (float): Optional delay before returning data.
+    
+    Returns:
+    ticker: The tick-by-tick data for the given contract.
+    """
+
+    # Request tick-by-tick data for the given contract asynchronously
+    ticker = await ib.reqTickersAsync(c)
+    
+    # Introduce an optional delay if specified
+    await asyncio.sleep(delay)
+
+    # Return the retrieved ticker data
+    return ticker
+
+async def get_market_data(ib: IB, 
+                          c: Contract,
+                          sleep: float = 2):
+
+    """
+    [async] Get marketPrice including implied volatility
+    Pretty quick when market is closed
+    """
+    tick = ib.reqMktData(c, genericTickList="106")
+    try:
+        await asyncio.sleep(sleep)
+    finally:
+        ib.cancelMktData(c)
+
+    return tick
+
+import logging
+import math
+
+logger = logging.getLogger(__name__)
+
+async def get_a_price_iv(ib, contract, sleep: float=2) -> dict:
+    """[async] Computes price and IV of a contract.
+
+    OUTPUT: dict{localsymbol, price, iv}
+    
+    Could take up to 12 seconds in case live prices are not available"""
+    
+    mkt_data = await get_market_data(ib, contract, sleep)
+    undPrice = mkt_data.marketPrice()
+
+    if math.isnan(undPrice):
+        undPrice = mkt_data.close
+        if math.isnan(undPrice):
+            tick_data = await get_tick_data(ib, contract)
+            tick_data_price = tick_data[0].marketPrice()
+            undPrice = tick_data_price if not math.isnan(tick_data_price) else tick_data[0].close
+            if math.isnan(undPrice):
+                logger.info(f"No price found for {contract.localSymbol}!")
+
+    iv = mkt_data.impliedVolatility
+    return {'localsymbol': contract.localSymbol, 'price': undPrice, 'iv': iv}
+
+import asyncio
+
+
+async def get_mkt_prices(port: int, 
+                         contracts: list, 
+                         chunk_size: int=44, 
+                         sleep: int=7) -> pd.DataFrame:
+    
+    """[async] A faster way to get market prices.
+    """
+
+    contracts = to_list(contracts)
+    chunks = chunk_me(contracts, chunk_size)
+    results = dict()
+    
+    ib = await IB().connectAsync(port=port)
+    try:
+        for cts in tqdm(chunks, desc="Mkt prices with IVs"):
+            tasks = [get_a_price_iv(ib, c, sleep) for c in cts]
+            res = await asyncio.gather(*tasks)
+
+            for r in res:
+                symbol, price, iv = r
+                results[symbol] = (price, iv)
+
+        df_prices = split_symbol_price_iv(results)
+        df_prices = pd.merge(clean_ib_util_df(contracts).iloc[:, :6], df_prices, on='symbol')
+
+        # remove unnecessary columns (for secType == `STK`)
+        keep_cols = ~((df_prices == 0).all() | \
+                  (df_prices == "").all() | \
+                    df_prices.isnull().all())
+
+        df_prices = df_prices.loc[:, keep_cols[keep_cols == True].index]
+    finally:
+        await ib.disconnectAsync()
+
+    return df_prices
+
+
+def split_symbol_price_iv(prices_dict: dict) -> pd.DataFrame:
+    """Splits symbol, prices and ivs into a df.
+    To be used after get_mkt_prices()"""
+    
+    symbols, prices, ivs = zip(*((symbol, price, iv) for symbol, (price, iv) in prices_dict.items()))
+    
+    df_prices = pd.DataFrame({'symbol': symbols, 'price': prices, 'iv': ivs})
+
+    return df_prices
+
+import asyncio
+from ib_async import IB
 
 if __name__ == "__main__":
 
-    df = asyncio.run(assemble_snp_underlyings(port))
+    # und_contracts = asyncio.run(assemble_snp_underlyings(port))
+    # pickle_me(und_contracts, PKL)
 
-    print(df)
+    # und_contracts = get_pickle(PKL)
+
+    # df_und_prices = asyncio.run(get_mkt_prices(port, und_contracts))
+
+    # pickle_me(df_und_prices, PKL)
+    # print(df_und_prices.head())
+
+    ib = IB().connect(port=port)
+
+    watch_dict = {"TSLA": "NYSE",
+                "MSFT": "NYSE",
+                "AAPL": "NYSE"}
+
+    def wait_for_market_data(tickers):
+        """print tickers as they arrive"""
+        print(tickers)
+
+    market_data={} # store ticker here
+    contracts ={} # store contracts here
+
+    # Define stocks
+    for ticker in list(watch_dict.keys()):
+
+        print(ticker)
+        contracts[ticker] = Stock(ticker, watch_dict[ticker], 'USD')
+        print(f"contract:{contracts[ticker]}")
+
+        # Request current prices
+        market_data[ticker] = ib.reqMktData(contracts[ticker], '', False, False)
+
+        #ib.sleep(2)
+        print(market_data[ticker])
+        ib.pendingTickersEvent += wait_for_market_data
+
+    # wait for tickers to fill
+    ib.sleep(2)
+    print(market_data)
+
+    print("wait for pendingTickersEvent to produce data")
+    ib.sleep(3)
+    _ = [ib.cancelMktData(_c) for _c in contracts.values()]
+    print("the end")
+    ib.disconnect()
+
+
+
+

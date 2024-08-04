@@ -376,6 +376,9 @@ def make_earliest_nakeds(fnos: Union[List, set],
 
     with tqdm(total=len(fnos), desc="Making nakeds", unit="symbol") as pbar:
 
+        suffix = get_pickle_suffix(pattern="*nakeds*")
+        filename = str(f"earliest_nakeds{suffix}.pkl")
+
         for symbol in fnos:
 
             pbar.set_description(f"for: {symbol}")
@@ -403,8 +406,6 @@ def make_earliest_nakeds(fnos: Union[List, set],
                     df = df.loc[(df.xPrice / df.price).sort_values().index]
 
                 if save and not df.empty:
-                    suffix = get_pickle_suffix(pattern="*nakeds*")
-                    filename = str(f"earliest_nakeds{suffix}.pkl")
                     pickle_me(df, ROOT / "data" / "raw" / filename)
             
             else:

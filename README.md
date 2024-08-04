@@ -5,6 +5,61 @@
 3. Fully independent of IBKR, with ability to hook to IBKR when needed
 4. Class (OOP) based with stock and option bots
 
+# Rules
+
+## Symbols
+-------
+a. Every valid symbol should have at least one order in the system
+b. Symbol without an underlying position should have one naked order
+c. Underlying positions should have two options
+   - i. For Put shorts: a Covered Call sell and a Protective Put buy position
+   - ii. For Call Shorts:  a Covered Put sell and a Protective Call buy position    \n
+
+d. Missing opitons should be available as orders
+
+## Orchestrator
+------------
+... will be continuously running to check for the following events.
+1. If the margin cushion is lower than 10% all open shorts for non-poisitions will be cancelled
+2. If there is an order fill
+   - selling price of all open shorts for non-positions will be bumped up
+   - the order fill will be journaled
+   - algo will go to recalculate mode
+   - selling price of all open shorts for non-positions will be modified per re-calculation
+   - algo will go to monitor (listening) mode
+3. Will schedule requests for information, like history, portfolio
+
+# Programs (sequential)
+1. `naked_orders()`
+   - `fnos()` ... list of fnos (weekly preferred. includes both stocks and index)
+   - `bans()` ... banned stocks of the exchange
+   - `underlyings()` ... get `price()`, `iv()`, `closest_opt_price()` and `closest_margin()`
+   - `chains()` ... all option chains limited by a `DTEMAX` that is typically 50 days.
+   - `targets()` ... `target_calls()` based on `CALLSTDMULT` and `target_puts()` based on `PUTSTDMULT` with `xPrice`
+
+2. `cover_orders()` ... for `COVERSTD` that is typically 1 SD
+
+3. `protect_orders()` ... for `PROTECTSTD` that is tyically 1 SD
+
+## ---- ON DEMAND ----
+
+4. `get_portfolio()` ... with `cushion()`, `pnl()` and `risk()`
+
+5. `get_openorders()` 
+
+6. `und_history()` ... OHLCs of underlyings. Updated in `delta` mode for missing days.
+
+7. `opt_history()` ... OHLCs of options. Updated in `delta` mode for missing days.
+
+## ---- CONTINUOUS MONITORING ----
+
+8. EVENT: MARGIN_BREACH
+9. EVENT: ORDER_FILL
+
+10. `bump_price()` ... by 10% upon order fill
+11. `recalculate()` that runs naked_orders function.
+
+
 ## Left at
 - snp.py
 
