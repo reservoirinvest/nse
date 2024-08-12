@@ -2,9 +2,7 @@
 name = "nse"
 version = "0.1.0"
 description = "Default template for PDM package"
-authors = [
-    {name = "reservoirinvest", email = "reservoirinvest@gmail.com"},
-]
+authors = [{ name = "reservoirinvest", email = "reservoirinvest@gmail.com" }]
 dependencies = [
     "load-dotenv>=0.1.0",
     "click>=8.1.7",
@@ -13,11 +11,15 @@ dependencies = [
 ]
 requires-python = "==3.11.*"
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }
 
 
 [tool.pdm]
 distribution = false
+
+[tool.ruff]
+select = ["E", "F", "W"]
+ignore = ["E501"]
 
 [tool.pdm.dev-dependencies]
 dev = [
@@ -41,4 +43,5 @@ dev = [
     "timeout-decorator>=0.5.0",
     "pytest>=8.3.2",
     "lxml>=5.2.2",
+    "ruff>=0.5.7",
 ]

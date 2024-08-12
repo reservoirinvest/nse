@@ -1,43 +1,59 @@
 # --- NSE-SPECIFIC FUNCTIONS ---
 # ==============================
 
-import asyncio
 import io
 import json
-import math
 from datetime import datetime, timedelta, timezone
 from typing import List, Union
 
 import numpy as np
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from from_root import from_root
 from ib_async import IB
+from ibfuncs import marginsAsync
 from loguru import logger
 from pandas import json_normalize
 from tqdm import tqdm
-
-from ibfuncs import get_ib_margin_comms, marginsAsync
-from utils import (Timer, append_black_scholes, append_cos,
-                   append_safe_strikes, append_xPrice, black_scholes,
-                   convert_to_numeric, convert_to_utc_datetime, get_dte,
-                   get_pickle_suffix, get_prec, load_config,
-                   merge_and_overwrite_df, pickle_me, split_dates)
+from utils import (
+    Timer,
+    append_black_scholes,
+    append_cos,
+    append_safe_strikes,
+    append_xPrice,
+    convert_to_numeric,
+    convert_to_utc_datetime,
+    delete_files,
+    get_dte,
+    get_files_from_patterns,
+    get_pickle,
+    get_pickle_suffix,
+    load_config,
+    merge_and_overwrite_df,
+    pickle_me,
+    split_and_uppercase,
+    split_dates,
+    yes_or_no,
+)
 
 ROOT = from_root()
-config = load_config()
+
+MARKET = "NSE"
+config = load_config(MARKET=MARKET)
 
 # ---- SETTING CONSTANTS ----
 
-# maps  for nifty and bank nifty
-IDXHISTSYMMAP = config.get("IDXHISTSYMMAP")
+PORT = port = config.get("PORT")
+
 PUTSTDMULT = config.get("PUTSTDMULT")
 CALLSTDMULT = config.get("CALLSTDMULT")
+MINEXPROM = config.get("MINEXPROM")
 
-PORT = port = config.get('PORT')
+# maps  for nifty and bank nifty
+IDXHISTSYMMAP = config.get("IDXHISTSYMMAP")
 
 # --- NSE CLASSES, METHODS AND DECORATORS ---
+
 
 def live_cache(app_name):
     """Caches the output for time_out specified. This is done in order to
@@ -76,7 +92,7 @@ def live_cache(app_name):
             cache_obj = self._cache[key]
             if now - cache_obj["timestamp"] < timedelta(seconds=time_out):
                 return cache_obj["value"]
-        except:
+        except:  # noqa: E722
             self._cache = {}
         value = app_name(self, *args, **kwargs)
         self._cache[key] = {"value": value, "timestamp": now}
@@ -212,7 +228,6 @@ class NSEfnos:
 
     @live_cache
     def stock_history(self, symbol, days: int = 365, chunks: int = 50):
-
         date_ranges = make_date_range_for_stock_history(symbol, days, chunks)
 
         result = []
@@ -223,8 +238,7 @@ class NSEfnos:
 
         return df
 
-    def equities(self, sort_me: bool=True) -> set:
-
+    def equities(self, sort_me: bool = True) -> set:
         equities_data = self.live_fno()
         equities = [kv.get("symbol") for kv in equities_data.get("data")]
         if sort_me:
@@ -238,7 +252,6 @@ class NSEfnos:
 
 
 class IDXHistories:
-
     time_out = 5
     base_url = "https://niftyindices.com"
     idx_symbols = IDXHISTSYMMAP.values()
@@ -281,7 +294,6 @@ class IDXHistories:
         self.cookies = c.cookies
 
     def get(self, payload={}):
-
         r = self.s.post(
             url=self.url,
             headers=self.post_header,
@@ -326,47 +338,27 @@ class IDXHistories:
         return df
 
 
-def rbi_tr_to_json(wrapper):
-    trs = wrapper.find_all("tr")
-    op = {}
-    for tr in trs:
-        tds = tr.find_all("td")
-        if len(tds) >= 2:
-            key = tds[0].text.strip()
-            val = tds[1].text.replace(":", "").replace("*", "").replace("#", "").strip()
+def repo_rate():
+    # Get RBI rate
+    url = "https://techfanetechnologies.github.io/risk_free_interest_rate/RiskFreeInterestRate.json"
+    response = requests.get(url)
 
-            op[key] = val
-    return op
+    if response.status_code == 200:
+        json_data = response.json()
+        rbi = json_data[0].get("Percent", None)
+    else:
+        logger.error("Not able to get RBI rate!")
+        rbi = None
 
+    return float(rbi)
 
-class RBI:
-    base_url = "https://www.rbi.org.in/"
-
-    def __init__(self):
-        self.s = requests.Session()
-
-    def current_rates(self):
-        r = self.s.get(self.base_url)
-
-        bs = BeautifulSoup(r.text, "html.parser")
-        wrapper = bs.find("div", {"id": "wrapper"})
-
-        return rbi_tr_to_json(wrapper)
-
-    def repo_rate(self):
-
-        rate = self.current_rates().get("Policy Repo Rate")[:-1]
-
-        return float(rate)
-
-# Instantiated RBI once to use for make_early_opts_for_symbol
-rbi = RBI()
-risk_free_rate = rbi.repo_rate() / 100
 
 # ------ CORE NSE FUNCTIONS ----
 
-def make_earliest_nakeds(fnos: Union[List, set], 
-                         save: bool = False) -> pd.DataFrame:
+
+def make_earliest_nse_nakeds(
+    fnos: Union[List, set], save: bool = False
+) -> pd.DataFrame:
     """Make all early fnos"""
 
     timer = Timer("Making earliest nakeds")
@@ -375,16 +367,14 @@ def make_earliest_nakeds(fnos: Union[List, set],
     dfs = []
 
     with tqdm(total=len(fnos), desc="Making nakeds", unit="symbol") as pbar:
-
-        suffix = get_pickle_suffix(pattern="*nakeds*")
-        filename = str(f"earliest_nakeds{suffix}.pkl")
+        suffix = get_pickle_suffix(pattern="*nsenakeds*")
+        filename = str(f"nsenakeds{suffix}.pkl")
 
         for symbol in fnos:
-
             pbar.set_description(f"for: {symbol}")
 
             try:
-                df_nakeds = make_early_opts_for_symbol(symbol, port=port)
+                df_nakeds = make_early_opts_for_nse_symbol(symbol, port=port)
                 df_nakeds = df_nakeds[df_nakeds.xPrice > 0]
 
             except (AttributeError, ValueError) as e:
@@ -407,7 +397,7 @@ def make_earliest_nakeds(fnos: Union[List, set],
 
                 if save and not df.empty:
                     pickle_me(df, ROOT / "data" / "raw" / filename)
-            
+
             else:
                 df = dfs
 
@@ -420,45 +410,46 @@ def make_earliest_nakeds(fnos: Union[List, set],
 
 # --- SEEKING ---
 
-def make_early_opts_for_symbol(
+
+def make_early_opts_for_nse_symbol(
     symbol: str,  # nse_symbol. can be equity or index
     port: int,
-    timeout: int=2, # timeout for marginsAsync
-        ) -> pd.DataFrame:
+    timeout: int = 2,  # timeout for marginsAsync
+) -> pd.DataFrame:
     """Make target options for nakeds with earliest expiry
-    
+
     Args:
        symbol: can be equity or index
        port: int. Could be LIVE_PORT | PAPER_PORT
-       """
+    """
 
     # initialize and get the base df
     n = NSEfnos()
     q = n.stock_quote_fno(symbol)
     dfe = equity_iv_df(q)
-    
+
     # clean up zero IVs and dtes
     mask = (dfe.iv > 0) & (dfe.dte > 0)
     df = dfe[mask].reset_index(drop=True)
-    
+
     # Append safe strikes
-    df = append_safe_strikes(df)
-    
+    df = append_safe_strikes(df, PUTSTDMULT, CALLSTDMULT)
+
     # Append black scholes
+    risk_free_rate = repo_rate() / 100
     df = append_black_scholes(df, risk_free_rate)
-    
+
     # Append contract, order to prep for margin
     df = append_cos(df)
-    
+
     # Get margins with approrpriate timeout and append
     with IB().connect(port=port) as ib:
-        df_mcom = ib.run(marginsAsync(ib=ib, df=df, 
-                                           timeout=timeout))
-    
+        df_mcom = ib.run(marginsAsync(ib=ib, df=df, timeout=timeout))
+
     df = merge_and_overwrite_df(df, df_mcom)
-    
+
     # Append xPrice
-    df = append_xPrice(df)
+    df = append_xPrice(df, MINEXPROM)
 
     return df
 
@@ -493,13 +484,46 @@ def get_all_fno_names() -> set:
     """All fnos in nse, including index, except banned"""
 
     n = NSEfnos()
-    d = n.stock_quote_fno('NIFTY')
-    fnos = n.equities() | set(d.get('allSymbol'))
+    d = n.stock_quote_fno("NIFTY")
+    fnos = n.equities() | set(d.get("allSymbol"))
     fnos = fnos - set(nse_ban_list())
     return fnos
 
 
+def get_fnos(fnos: Union[str, list, None]) -> Union[list, None]:
+    """Gets fnos after checking for remnants
+
+    Args:
+        fnos (Union[str, list, None]): nse futures and options list
+
+    Returns:
+        Union[list, None]: final nse futures and options
+    """
+
+    if not fnos:
+        files = get_files_from_patterns(ROOT / "data" / "raw", pattern="*nsenakeds*")
+        if files:
+            ans = yes_or_no("Delete remnants of earliest?")
+            if ans:  # Delete the files!
+                delete_files(files)
+                fnos = get_all_fno_names()
+            else:
+                logger.info("\nGenerating remaining nakeds")
+                p = [get_pickle(f) for f in files]
+                remove = set(
+                    pd.concat(p, axis=0, ignore_index=True).nse_symbol.to_list()
+                )
+                fnos = get_all_fno_names() - remove
+        else:
+            fnos = get_all_fno_names()
+    else:
+        fnos = split_and_uppercase(fnos)
+
+    return fnos
+
+
 # ---- CLEANING ---
+
 
 def clean_stock_history(result: list) -> pd.DataFrame:
     """Cleans output of"""
@@ -593,7 +617,9 @@ def clean_index_history(results: list) -> pd.DataFrame:
 
     return df
 
+
 # --- CONVERTING ---
+
 
 def nse2ib(nse_list):
     """Converts nse to ib friendly symbols"""
@@ -640,12 +666,16 @@ def equity_iv_df(quotes: dict) -> pd.DataFrame:
     symbol = quotes.get("info").get("symbol")
 
     try:
-        lot = (quotes["stocks"][0].get("marketDeptOrderBook").get("tradeInfo").get("marketLot"))
-    except IndexError as e:
+        lot = (
+            quotes["stocks"][0]
+            .get("marketDeptOrderBook")
+            .get("tradeInfo")
+            .get("marketLot")
+        )
+    except IndexError:
         logger.error(f"No lots found for {symbol}!")
 
         return pd.DataFrame([])
-
 
     undPrice = quotes["underlyingValue"]
 
@@ -716,5 +746,3 @@ def equity_iv_df(quotes: dict) -> pd.DataFrame:
     df = df[df.instrument.isin(["IDXOPT", "STKOPT"])]
 
     return df
-
-

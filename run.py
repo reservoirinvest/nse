@@ -1,134 +1,72 @@
-# --- CLI RUN
-
-import sys
-from pathlib import Path
-
 import click
+from typing import Union
 import pandas as pd
-from from_root import from_root
 from ib_async import IB
 from loguru import logger
-
-from nse import make_earliest_nakeds, get_all_fno_names
-from utils import (delete_files, get_files_from_patterns, pretty_print_df,
-                   split_and_uppercase, yes_or_no, get_pickle)
-
-# Set the root
-ROOT = from_root()
-
-# Set path for imported modules
-def set_module_path(ROOT: Path):
-     
-    if str(ROOT) not in sys.path:
-                sys.path.insert(1, str(ROOT))
-
-    # Add `src` and ROOT to _src.pth in .venv to allow imports in VS Code
-    from pathlib import Path
-    from sysconfig import get_path
-
-    if "src" not in Path.cwd().parts:
-        src_path = str(Path(get_path("purelib")) / "_src.pth")
-        with open(src_path, "w") as f:
-            f.write(str(ROOT / "src\n"))
-            f.write(str(ROOT))
-
-set_module_path(ROOT=ROOT)
-
-# ---- IMPORT MY MODULES -----
-# ----------------------------
-
 from ibfuncs import get_open_orders, quick_pf
-from utils import clean_symbols, get_files_from_patterns, load_config
+from nse import get_fnos, make_earliest_nse_nakeds
+from utils import clean_symbols, pretty_print_df
 
-# load configs and set the logger
-config = load_config()
-logger.add(sink=ROOT / "log" / "run.log", mode="w", level=config.get('LOGLEVEL'))
+def nse_nakeds(save: bool, fnos: Union[list, str, None]) -> pd.DataFrame:
+    """Generates nakeds for NSE
 
-# --- CONSTANTS ---
-# -----------------
-
-PORT = port = config.get("PORT")
-CID = config.get("CLIENTID")
-NSE2IB = config.get('NSE2IB')
-
-
-@click.group()
-def cli():
-    """NSE command line interface"""
-    pass
-
-# --- CLICK CHOICES ---
-# ----------------------
-
-# *--- to make earliest nakeds ---
-
-@cli.command(name='ib-early-nakeds', help='Makes earliest nakeds')
-@click.option('--save', default=False, is_flag=True)
-@click.argument('fnos', type=str, nargs=-1, required=False)
-def make_nakeds(save, fnos):
-    """Makes and shows naked options for earliest dte
     Args:
-       save: True pickles in data/raw folder"""
+        save (bool): Pickles to `data/raw`
+        fnos (Union[list, str, None]): If fno or a list doesn't save 
+
+    Returns:
+        pd.DataFrame: Naked options df
+    """
     df = pd.DataFrame()  # Initialize df to avoid reference before assignment error
+    
+    if fnos: # prevents saving if fnos are given
+        save = False
+    
+    fnos = get_fnos(fnos)
 
-    if not fnos:
-        files = get_files_from_patterns(ROOT / 'data' / 'raw')
-        if files:
-            ans = yes_or_no("Delete remnants of earliest?")
-            if ans:  # Delete the files!
-                delete_files(files)
-                fnos = get_all_fno_names()
-            else:
-                p = [get_pickle(f) for f in files]
-                remove = set(pd.concat(p, axis=0, ignore_index=True).nse_symbol.to_list())
-                fnos = get_all_fno_names() - remove
-        else:
-            fnos = get_all_fno_names()
-    else:
-        fnos = split_and_uppercase(fnos)
-
-    if not isinstance(fnos, list):
-        fnos = list(fnos)
-
-    fnos.sort()  # Sort the list
-
+    # Make the nakeds
     try:
-        df = make_earliest_nakeds(fnos, save=save)
+        df = make_earliest_nse_nakeds(fnos, save=save)
     except Exception as e:
         logger.error(f"Error in make_earliest_nakeds: {e}")
-        click.echo(f"An error occurred: {e}")
-        return df
+        df = pd.DataFrame([]) # empty df
 
-    # Print a small sample
-    df_print = df.drop(columns=['contract', 'expiry', 'instrument', 'ib_symbol'], errors='ignore')
-
-    if not df_print.empty:
+    # Print a small sample upon success
+    if not df.empty:
+        df_print = df.drop(columns=['contract', 'expiry', 'instrument', 'ib_symbol'], errors='ignore')
         df_print = df_print.groupby('nse_symbol').head(2).iloc[:10]
-
-    pretty_print_df(df_print)
+        pretty_print_df(df_print)
 
     return df
 
+def get_portfolio(port: int, clientId: int=10) -> pd.DataFrame:
+    """Gets portfolio. Needs IB-TWS or IBG to be running.
 
+    Args:
+        port (int): `Live` port no
+        clientId (int, optional): Client ID. Defaults to 10.
 
-# *--- for open orders ---
+    Returns:
+        pd.DataFrame: Portfolio df
+    """
+    with IB().connect(port=port, clientId=clientId) as ib:
+        df = quick_pf(ib=ib)
+        pretty_print_df(df)
+    return df
 
-@cli.command(name='ib-open-orders', help='Shows open orders from IB.')
-@click.argument('symbols', type=str, nargs=-1, required=False)
-@click.option('--active', default=False, help='Needs an active TWS-IB/IBG connection')
-@click.option('--port', default=3000, help='Active IB port')
-@click.option('--cid', default=10, help='Active IB Client ID')
-
-def open_ords(symbols, active, port, cid) -> pd.DataFrame:
-    """ NOTE: Needs IB-TWS or IBG to be running.
+def get_orders(symbols: Union[str, list, None], 
+              active: bool, 
+              port: int, 
+              cid:int) -> pd.DataFrame:
+    """Gets all open orders. Needs IB-TWS or IBG to be running.
     Args:
        active: if True shows only ACTIVE orders:   
        pending, pendingSubmit, presubmit and submitted
        port: Port of active IB client
-       clientId: Set as 10 for all API orders
+       cid: Set as 10 for all API orders
 
     Returns:
-       df
+       pd.DataFrame: Order df
     """
     with IB().connect(port=port, clientId=cid) as ib:
         df = get_open_orders(ib=ib, is_active=active)
@@ -138,32 +76,55 @@ def open_ords(symbols, active, port, cid) -> pd.DataFrame:
         if symbols:
             symbols = clean_symbols(symbols)
             df = df[df.symbol.isin(symbols)]
-
         pretty_print_df(df)
 
     return df
 
-
-# *--- for portfolio ---
-
-@cli.command(name='ib-portfolio', help='Shows current portfolio from IB.')
-@click.option('--port', default=3000, help='Active IB port')
-@click.option('--clientId', default=10, help='Active IB Client ID')
-def get_portfolio(port, clientId):
-    """ NOTE: Needs IB-TWS or IBG to be running.
-    Args:
-       port: Port of active IB client
-       clientId: Set as 10 for all API orders
+def market_selection():
+    """Prompt the user to select a market.
 
     Returns:
-       df
+        str: Selected market
     """
-    with IB().connect(port=port, clientId=clientId) as ib:
-        df = print(quick_pf(ib=ib))
+    click.echo("Select the market:")
+    click.echo("1. NSE")
+    click.echo("2. SNP")
+    choice = click.prompt("Enter your choice (1 or 2)", type=int)
 
-        pretty_print_df(df)
+    if choice == 1:
+        return 'nse'
+    elif choice == 2:
+        return 'snp'
+    else:
+        click.echo("Invalid choice. Please select 1 or 2.")
+        return market_selection()
 
-    return df
+@click.command()
+@click.option('--function', type=click.Choice(['nse_nakeds', 'get_orders', 'get_portfolio'], case_sensitive=False), required=True, help='Function to execute.')
+@click.option('--save', is_flag=True, default=True, help='Pickles to `data/raw` if set (only for nse_nakeds).')
+@click.option('--fnos', type=str, multiple=True, help='FNOs as a list of strings or a single string. Use comma to separate multiple values (only for nse_nakeds).')
+@click.option('--port', type=int, help='Port number for IB connection (required for get_orders and get_portfolio).')
+@click.option('--clientid', type=int, default=10, help='Client ID for IB connection (default is 10).')
+@click.option('--active', is_flag=True, default=False, help='If set, shows only ACTIVE orders (only for get_orders).')
+@click.option('--symbols', type=str, multiple=True, help='Symbols to filter orders (only for get_orders).')
+def cli(function, save, fnos, port, clientid, active, symbols):
+    """Command line interface for IBKR option functions."""
+    if function == 'nse_nakeds':
+        # Convert fnos to a list if it is provided
+        fnos_list = list(fnos) if fnos else None
+        nse_nakeds(save, fnos_list)
+    elif function == 'get_orders':
+        if port is None:
+            raise click.BadParameter('Port is required for get_orders.')
+        symbols_list = list(symbols) if symbols else None
+        get_orders(symbols_list, active, port, clientid)
+    elif function == 'get_portfolio':
+        if port is None:
+            raise click.BadParameter('Port is required for get_portfolio.')
+        get_portfolio(port, clientid)
+    
+    # Print or process the result as needed
+    # print(result)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     cli()

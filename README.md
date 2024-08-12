@@ -1,21 +1,26 @@
 # Objectives
 
-1. Perpare for NSE morning naked trades
+1. Perpare for morning naked trades
 2. Prepare set of utilities that could be common to NSE and SNP
 3. Fully independent of IBKR, with ability to hook to IBKR when needed
 4. Class (OOP) based with stock and option bots
+
+## Left at
+- _order.ipynb. update ibfuncs.py with `place_nakeds()` function, to cater to both snp and nse.
+- snp.py. Struggling to run async `IB().getMktData()` for price, iv.
+
 
 # Rules
 
 ## Symbols
 -------
 a. Every valid symbol should have at least one order in the system
-b. Symbol without an underlying position should have one naked order
-c. Underlying positions should have two options
+b. A Symbol without an underlying position should have one naked order
+c. An Underlying position should have two options:
    - i. For Put shorts: a Covered Call sell and a Protective Put buy position
    - ii. For Call Shorts:  a Covered Put sell and a Protective Call buy position    \n
 
-d. Missing opitons should be available as orders
+d. Put and Call buys without underlying positions are `orphaned`. They should have closing orders.
 
 ## Orchestrator
 ------------
@@ -24,10 +29,10 @@ d. Missing opitons should be available as orders
 2. If there is an order fill
    - selling price of all open shorts for non-positions will be bumped up
    - the order fill will be journaled
-   - algo will go to recalculate mode
+   - algo will go to `recalculate` mode
    - selling price of all open shorts for non-positions will be modified per re-calculation
    - algo will go to monitor (listening) mode
-3. Will schedule requests for information, like history, portfolio
+3. Will schedule requests for information, like `get_portfolio()` in a separate thread.
 
 # Programs (sequential)
 1. `naked_orders()`
@@ -36,16 +41,21 @@ d. Missing opitons should be available as orders
    - `underlyings()` ... get `price()`, `iv()`, `closest_opt_price()` and `closest_margin()`
    - `chains()` ... all option chains limited by a `DTEMAX` that is typically 50 days.
    - `targets()` ... `target_calls()` based on `CALLSTDMULT` and `target_puts()` based on `PUTSTDMULT` with `xPrice`
+   - `place_nakeds()` ... place targets, after checking `get_portfolio()` and `get_open_orders()`
 
-2. `cover_orders()` ... for `COVERSTD` that is typically 1 SD
+2. `opt_closures()` - create closing orders based on profitability scaled to dte from `fill_date()`. 
 
-3. `protect_orders()` ... for `PROTECTSTD` that is tyically 1 SD
+3. `cover_orders()` ... for stock positions with `COVERSTD` that is typically 1 SD
+
+4. `protect_orders()` ... for stock positions with `PROTECTSTD` that is tyically 1 SD
 
 ## ---- ON DEMAND ----
 
-4. `get_portfolio()` ... with `cushion()`, `pnl()` and `risk()`
+5. `get_portfolio()` ... with `cushion()`, `pnl()` and `risk()`
 
-5. `get_openorders()` 
+6. `get_openorders()` 
+
+7. `fill_date()` ... gets the order fill date from /data/xn_history (or) IB report 
 
 6. `und_history()` ... OHLCs of underlyings. Updated in `delta` mode for missing days.
 
@@ -57,23 +67,21 @@ d. Missing opitons should be available as orders
 9. EVENT: ORDER_FILL
 
 10. `bump_price()` ... by 10% upon order fill
-11. `recalculate()` that runs naked_orders function.
+11. `recalculate()` ... recalculate xPrice after a re-run of `naked_orders()` function.
 
 
-## Left at
-- snp.py
+# To-do
 
-## To-do
-
+- [ ] `place_nakeds()` function for orders
+- [ ] Make `get_price_iv()` asynchronously
 - [ ] Make `snp.py` with:
    - [ ] qualified underlyings
    - [ ] price, margins and iv for underlyings
    - [ ] chains for `df_all` options
-   - [ ] 
 
 
 - [ ] Option to pick up margins from offline
-- [ ] Extend to expiries beyond earliest
+- [ ] Extend to expiries beyond earliest for `nse`
 
 
 - [ ] modify an order - from df_nakeds

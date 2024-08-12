@@ -3,37 +3,39 @@
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Union
 
 import numpy as np
 import pandas as pd
-import timeout_decorator
+from dotenv import load_dotenv
 from from_root import from_root
 from ib_async import IB, LimitOrder, MarketOrder, Option, Order, util
 from loguru import logger
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
 
-from utils import (arrange_orders, clean_ib_util_df, get_files_from_patterns,
-                   get_pickle, handle_raws, load_config, make_contracts_orders,
-                   pickle_me, to_list)
+from utils import (arrange_orders, clean_ib_util_df, handle_raws, load_config,
+                   make_contracts_orders, pickle_me, to_list)
 
 ROOT = from_root()
-config = load_config()
+load_dotenv(dotenv_path=ROOT)  # loads environment from .env
 
-LOGLEVEL = config.get('LOGLEVEL')
+LOGLEVEL = os.getenv("LOGLEVEL", "DEBUG")
+ACTIVESTATUS = os.getenv("ACTIVESTATUS", "")
 
 # --- SETTING LOGS ----
 
 # Set ib_async logs to file, for loguru to capture
 level = logging.getLevelNamesMapping().get(LOGLEVEL)
-log_file = ROOT / "log" / str(__name__+".log")
+log_file = ROOT / "log" / str(__name__ + ".log")
 util.logToFile(log_file, level=level)
-open(log_file, "w").close() # Wipe the logfile clean!
+open(log_file, "w").close()  # Wipe the logfile clean!
 
 # --- CLASSES AND THEIR METHODS
+
 
 @dataclass
 class OpenOrder:
@@ -83,6 +85,7 @@ class Portfolio:
     def empty(self):
         return empty_the_df(self)
 
+
 def empty_the_df(df):
     """Empty the dataclass df"""
     empty_df = pd.DataFrame([df.__dict__]).iloc[0:0]
@@ -90,6 +93,7 @@ def empty_the_df(df):
 
 
 # --- IB BLOCKING FUNCTIONS ---
+
 
 def get_ib_margin(contract: Option, order: MarketOrder, port: int) -> dict:
     """Gets margin and commission of a contract"""
@@ -101,7 +105,9 @@ def get_ib_margin(contract: Option, order: MarketOrder, port: int) -> dict:
 
     # margin = float(wif.initMarginChange) # initial margin is too high compared to Zerodha, SAMCO
     margin = float(wif.maintMarginChange)
-    comm = min(float(wif.commission), float(wif.minCommission), float(wif.maxCommission))
+    comm = min(
+        float(wif.commission), float(wif.minCommission), float(wif.maxCommission)
+    )
     if comm > 1e7:
         comm = np.nan
 
@@ -130,7 +136,9 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
             lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1
         )
     else:
-        data = df_cos.apply(lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1)
+        data = df_cos.apply(
+            lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1
+        )
 
     df_mcom = pd.DataFrame.from_dict(data.to_dict()).T
 
@@ -140,8 +148,8 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
     )
 
     # merge margins and commissions
-    df_opts = df.merge(df_q, left_index=True, right_index=True, suffixes=('_left', ''))
-    df_opts = df_opts.drop(columns='contract_left', errors='ignore')
+    df_opts = df.merge(df_q, left_index=True, right_index=True, suffixes=("_left", ""))
+    df_opts = df_opts.drop(columns="contract_left", errors="ignore")
 
     # determine the secType for IB
     df_opts = df_opts.assign(secType=df_opts.contract.apply(lambda s: s.secType))
@@ -153,14 +161,16 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
 
 # *---- Qualifying ----
 
-async def qualify_me(ib: IB, 
-                     contracts: list,
-                     desc: str = 'Qualifying contracts'):
+
+async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"):
     """[async] Qualify contracts asynchronously"""
 
-    contracts = to_list(contracts) # to take care of single contract
+    contracts = to_list(contracts)  # to take care of single contract
 
-    tasks = [asyncio.create_task(ib.qualifyContractsAsync(c), name=c.localSymbol) for c in contracts]
+    tasks = [
+        asyncio.create_task(ib.qualifyContractsAsync(c), name=c.localSymbol)
+        for c in contracts
+    ]
 
     await tqdm_asyncio.gather(*tasks, desc=desc)
 
@@ -168,15 +178,16 @@ async def qualify_me(ib: IB,
 
     return result
 
+
 # *---- Async margins and commissions -----
+
 
 async def get_one_margin(ib, contract, order, timeout):
     """Get margin with commissions within a time"""
 
     try:
         wif = await asyncio.wait_for(
-            ib.whatIfOrderAsync(contract, order), 
-            timeout=timeout
+            ib.whatIfOrderAsync(contract, order), timeout=timeout
         )
     except asyncio.TimeoutError:
         logger.error(f"{contract.localSymbol} wif timed out!")
@@ -198,9 +209,9 @@ def margin_comm(r) -> dict:
     return (margin, comm)
 
 
-async def marginsAsync(ib: IB, df: pd.DataFrame, 
-                       timeout: float = 2, eod: bool = True, 
-                       ist: bool = True) -> pd.DataFrame:
+async def marginsAsync(
+    ib: IB, df: pd.DataFrame, timeout: float = 2, eod: bool = True, ist: bool = True
+) -> pd.DataFrame:
     """Gets async contracts from a df
     Args:
       df: dataframe with `contract` and `order` columns
@@ -234,19 +245,25 @@ async def marginsAsync(ib: IB, df: pd.DataFrame,
     return df_mcom
 
 
-
 # --- ORDER HANDLING (BLOCKING) ---
 
 
-def order_nakeds(df_opts:pd.DataFrame, port:int, 
-                 how_many:int=2, puts_only:bool=False) -> list:
+def order_nakeds(
+    df_opts: pd.DataFrame,
+    MARKET: str,
+    PORT: str = "PORT",
+    how_many: int = 2,
+    puts_only: bool = False,
+) -> list:
     """Order nakeds
     Args:
        df_opts: df of option orders to be placed
        port: IB port for ordering"""
-    
-    config = load_config()
-    MARGINPERORDER = config.get('MARGINPERORDER')
+
+    config = load_config(MARKET)
+
+    port = config.get(PORT)
+    MARGINPERORDER = config.get("MARGINPERORDER")
 
     # Check raw foder for remnants and process
     handle_raws()
@@ -273,8 +290,9 @@ def order_nakeds(df_opts:pd.DataFrame, port:int,
     # get the target options to plant
     dft = df_opts[~df_opts.ib_symbol.isin(remove_ib_syms)].reset_index(drop=True)
 
-    df_nakeds = arrange_orders(dft, maxmargin=MARGINPERORDER, 
-                               how_many=how_many, puts_only=puts_only)
+    df_nakeds = arrange_orders(
+        dft, maxmargin=MARGINPERORDER, how_many=how_many, puts_only=puts_only
+    )
     cos = make_ib_orders(df_nakeds)
 
     # place the orders
@@ -283,7 +301,7 @@ def order_nakeds(df_opts:pd.DataFrame, port:int,
             ordered = place_orders(ib=ib, cos=cos)
         pass
     else:
-        logger.info(f"Nothing to order!")
+        logger.info("Nothing to order!")
         ordered = []
 
     # timestamp and archive the orders
@@ -295,13 +313,16 @@ def order_nakeds(df_opts:pd.DataFrame, port:int,
 
     return ordered
 
+
 def make_ib_orders(df: pd.DataFrame) -> tuple:
     """Make (contract, order) tuples"""
 
     contracts = df.contract.to_list()
-    orders = [LimitOrder(action="SELL", totalQuantity=abs(int(q)), lmtPrice=p)
-                for q, p in zip(df.lot, df.xPrice)]
-    
+    orders = [
+        LimitOrder(action="SELL", totalQuantity=abs(int(q)), lmtPrice=p)
+        for q, p in zip(df.lot, df.xPrice)
+    ]
+
     cos = tuple((c, o) for c, o in zip(contracts, orders))
 
     return cos
@@ -342,8 +363,6 @@ def place_orders(ib: IB, cos: Union[tuple, list], blk_size: int = 25) -> List:
 def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
     """Gets open orders - blocking version"""
 
-    ACTIVE_STATUS = config.get('ACTIVE_STATUS')
-
     df_openords = OpenOrder().empty()  # Initialize open orders
 
     trades = ib.reqAllOpenOrders()
@@ -351,7 +370,6 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
     dfo = pd.DataFrame([])
 
     if trades:
-
         all_trades_df = (
             clean_ib_util_df([t.contract for t in trades])
             .join(util.df(t.orderStatus for t in trades))
@@ -371,7 +389,7 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
         dfo = all_trades_df[trades_cols]
 
         if is_active:
-            dfo = dfo[dfo.status.isin(ACTIVE_STATUS)]
+            dfo = dfo[dfo.status.isin(ACTIVESTATUS)]
 
     return dfo
 
@@ -401,6 +419,43 @@ def quick_pf(ib) -> Union[None, pd.DataFrame]:
     return df_pf
 
 
+async def account_values(ib: IB) -> dict:
+    """Gets account values
+
+    Args:
+        ib (IB): an active connection
+
+    Returns:
+        dict: current nlv, cash and margins
+    """
+
+    df_acc = util.df(ib.accountValues())
+
+    d_map = {
+        "TotalCashBalance": "cash",
+        "Cushion": "cushion",
+        "NetLiquidation": "nlv",
+        "InitMarginReq": "init_margin",
+        "EquityWithLoanValue": "equity_val",
+        "MaintMarginReq": "maint_margin",
+        "UnrealizedPnL": "pnl_real",
+        "UnrealizedPnL": "pnl_unreal",
+        "LookAheadAvailableFunds": "funds_avlbl",
+    }
+
+    # get account values as a dictionary
+    df_out = df_acc[df_acc.tag.isin(d_map.keys())]
+    acc = df_out.set_index("tag").value.apply(float).to_dict()
+
+    # sort account values based on d_map's order
+    order = list(d_map.values())
+    order_index = {key: index for index, key in enumerate(order)}
+    sorted_keys = sorted(d_map.keys(), key=lambda x: order_index.get(x, float("inf")))
+    sorted_dict = {d_map.get(key): acc.get(key) for key in sorted_keys}
+
+    return sorted_dict
+
+
 def cancel_all(port: int):
     """Cancels all orders"""
 
@@ -409,11 +464,12 @@ def cancel_all(port: int):
 
 
 if __name__ == "__main__":
+    MARKET = "nse"
+    config = load_config(MARKET)
 
-    port = PORT = config.get('PORT')
+    port = config.get("PORT")
 
     with IB().connect(port=port, clientId=10) as ib:
-            out = get_open_orders(ib)
+        out = quick_pf(ib)
 
     print(out)
-

@@ -19,5 +19,34 @@
         "titleBar.inactiveBackground": "#80808099",
         "titleBar.inactiveForeground": "#15202b99"
     },
-    "jupyter.notebookFileRoot": "${workspaceFolder}"
+    "jupyter.notebookFileRoot": "${workspaceFolder}",
+    {
+        // Enable Python linting
+        "python.linting.enabled": true,
+    
+        // Disable other linters if they are enabled
+        "python.linting.pylintEnabled": false,
+        "python.linting.flake8Enabled": false,
+        "python.linting.mypyEnabled": false,
+    
+        // Enable Ruff as the linter
+        "python.linting.ruffEnabled": true,
+    
+        // Optional: Configure Ruff arguments
+        "python.linting.ruffArgs": ["--select", "E,F,W", "--ignore", "E501"],
+    
+        // Other settings
+        "explorer.confirmDelete": false,
+        "explorer.sortOrder": "type",
+        "editor.accessibilitySupport": "off",
+        "editor.inlayHints.enabled": "on",
+        "[python]": {
+            "editor.formatOnType": true,
+            "editor.showUnused": false
+        },
+        "ruff.nativeServer": "on",
+        "debug.allowBreakpointsEverywhere": true,
+        "jupyter.askForKernelRestart": false
+    }
+    
 }

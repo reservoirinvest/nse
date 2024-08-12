@@ -1,19 +1,13 @@
-import pytest
-import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
+
+import pandas as pd
+import pytest
 import pytz
-from utils import (
-    Timer, Timediff, load_config, yes_or_no, pickle_me, get_pickle,
-    delete_files, get_pickle_suffix, remove_raw_nakeds, get_files_from_patterns,
-    get_file_age, split_time_difference, how_many_days_old, pickle_with_age_check,
-    handle_raws, split_dates, chunk_me, clean_ib_util_df, convert_to_utc_datetime,
-    convert_to_numeric, convert_daily_volatility_to_yearly, fbfillnas, clean_symbols,
-    merge_and_overwrite_df, get_closest_strike, get_dte, get_a_stdev, get_prob,
-    get_prec, append_safe_strikes, append_black_scholes, append_cos, append_xPrice,
-    make_contracts_orders, arrange_orders, black_scholes, arrange_df_columns,
-    pretty_print_df, split_and_uppercase
-)
+
+from utils import (append_black_scholes, convert_to_utc_datetime, fbfillnas,
+                   get_files_from_patterns, split_dates)
+
 
 # Example test for convert_to_utc_datetime
 def test_convert_to_utc_datetime():
@@ -49,7 +43,7 @@ def test_split_dates():
 def test_get_files_from_patterns(mocker):
     mocker.patch('your_module_name.from_root', return_value=Path('/mock/root'))
     mocker.patch('pathlib.Path.glob', return_value=[Path('/mock/root/data/raw/file1'), Path('/mock/root/data/raw/file2')])
-    
+
     result = get_files_from_patterns()
     expected = [Path('/mock/root/data/raw/file1'), Path('/mock/root/data/raw/file2')]
     assert result == expected

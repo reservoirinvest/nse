@@ -1,7 +1,6 @@
 # COMMON UTILITY SCRIPTS
 # ======================
 
-import glob
 import math
 import os
 import pickle
@@ -36,7 +35,7 @@ class Timer:
     def start(self):
         """Start a new timer"""
         if self._start_time is not None:
-            raise ValueError(f"Timer is running. Use .stop() to stop it")
+            raise ValueError("Timer is running. Use .stop() to stop it")
 
         now = datetime.now()
 
@@ -46,7 +45,7 @@ class Timer:
 
     def stop(self) -> None:
         if self._start_time is None:
-            raise ValueError(f"Timer is not running. Use .start() to start it")
+            raise ValueError("Timer is not running. Use .start() to start it")
 
         elapsed_time = datetime.now() - self._start_time
 
@@ -62,7 +61,10 @@ class Timer:
 
 class Timediff:
     """Stores time difference for file_age."""
-    def __init__(self, td: timedelta, days: int, hours: int, minutes: int, seconds: float):
+
+    def __init__(
+        self, td: timedelta, days: int, hours: int, minutes: int, seconds: float
+    ):
         self.td = td
         self.days = days
         self.hours = hours
@@ -72,17 +74,48 @@ class Timediff:
 
 # --- CONFIGURATION FROM ENVIRONMENT ----
 
-def load_config():
+
+def choose_market():
+    while True:
+        try:
+            # Ask the user for input
+            user_input = input(
+                "Please choose between ['NSE', 'SNP'] or press Ctrl+C to quit: "
+            ).upper()
+
+            # Check the user's input
+            if user_input == "NSE":
+                print("You chose NSE.")
+                break  # Exit the loop if a valid choice is made
+            elif user_input == "SNP":
+                print("You chose SNP.")
+                break  # Exit the loop if a valid choice is made
+            else:
+                print("Invalid choice. Please try again.")
+
+        except KeyboardInterrupt:
+            print("\nProgram aborted.")
+            exit()  # Exit the program
+
+    return user_input
+
+
+def load_config(MARKET: str):
     """Loads configuration from .env and config.yml files."""
 
     # Load environment variables from .env file
     load_dotenv()
 
-    # Load config from YAML file
+    # Add configs from YAML file
 
     ROOT = from_root()
-    with open(ROOT / "config" / "config.yml", "r") as f:
-        config = yaml.safe_load(f)
+
+    if MARKET.upper() == "NSE":
+        with open(ROOT / "config" / "nse_config.yml", "r") as f:
+            config = yaml.safe_load(f)
+    else:
+        with open(ROOT / "config" / "snp_config.yml", "r") as f:
+            config = yaml.safe_load(f)
 
     # Merge environment variables with config
     for key, value in os.environ.items():
@@ -94,30 +127,32 @@ def load_config():
 
 # --- INTERACTIONS ---
 
+
 def yes_or_no(question: str, default="n") -> bool:
-  """Asks a yes or no question with a default answer.
+    """Asks a yes or no question with a default answer.
 
-  Args:
-    question: The question to ask.
-    default: The default answer if the user presses Enter.
+    Args:
+      question: The question to ask.
+      default: The default answer if the user presses Enter.
 
-  Returns:
-    True if the user answered yes, False otherwise.
-  """
+    Returns:
+      True if the user answered yes, False otherwise.
+    """
 
-  while True:
-    answer = input(question + f" (y/n): ").lower().strip()
-    if not answer:
-      return default == "y"
-    if answer in ("y", "yes"):
-      return True
-    elif answer in ("n", "no"):
-      return False
-    else:
-      print("Please answer yes or no.")
+    while True:
+        answer = input(question + " (y/n): ").lower().strip()
+        if not answer:
+            return default == "y"
+        if answer in ("y", "yes"):
+            return True
+        elif answer in ("n", "no"):
+            return False
+        else:
+            print("Please answer yes or no.")
 
 
 # --- FILE HANDLING ---
+
 
 def pickle_me(obj, file_name_with_path: Path):
     """Pickles objects in a given path"""
@@ -173,8 +208,7 @@ def get_pickle_suffix(pattern: str = "*nakeds*"):
     return max(suffixes) + 1 if suffixes else 1
 
 
-def remove_raw_nakeds(save: bool=True):
-
+def remove_raw_nakeds(pattern: str, save: bool = True):
     # consolidate and pickle
     files = get_files_from_patterns(pattern="*nakeds*")
 
@@ -194,20 +228,19 @@ def remove_raw_nakeds(save: bool=True):
         logger.info(f"Deleted files {files}")
 
 
-def get_files_from_patterns(file_path = None, pattern: str = "*nakeds*") -> list:
-    """Gets list of files of matching pattern from a folder path """
+def get_files_from_patterns(file_path=None, pattern: str = "") -> list:
+    """Gets list of files of matching pattern from a folder path"""
 
     ROOT = from_root()
 
-    if file_path is None: # Defaults to raw data folder
-        file_path = ROOT / 'data' / 'raw'
+    if file_path is None:  # Defaults to raw data folder
+        file_path = ROOT / "data" / "raw"
 
     # Use pathlib.Path.glob for pattern matching
     result = list(Path(file_path).glob(pattern))
 
-    # result = glob.glob(str(file_path / pattern))
-
     return result
+
 
 def get_file_age(file_path: Path) -> Optional[Timediff]:
     """Gets age of a file in timedelta and d,h,m,s."""
@@ -220,6 +253,7 @@ def get_file_age(file_path: Path) -> Optional[Timediff]:
     td = time_now - file_time
 
     return split_time_difference(td)
+
 
 def split_time_difference(diff: timedelta) -> Timediff:
     """Splits time difference into days, hours, minutes, seconds."""
@@ -234,38 +268,54 @@ def split_time_difference(diff: timedelta) -> Timediff:
 def how_many_days_old(file_path: Path) -> float:
     """Gets the file's age in days"""
     file_age = get_file_age(file_path=file_path)
-    
+
     seconds_in_a_day = 86400
     file_age_in_days = file_age.td.total_seconds() / seconds_in_a_day if file_age else 0
-    
+
     return file_age_in_days
 
-def pickle_with_age_check(obj: dict, file_name_with_path: Path, minimum_age_in_days: float = 1) -> None:
+
+def pickle_with_age_check(
+    obj: dict, file_name_with_path: Path, minimum_age_in_days: float = 1
+) -> None:
     """Pickles an object after checking file age."""
     existing_file_age = get_file_age(file_name_with_path)
-    
+
     seconds_in_a_day = 86400  # 24 * 60 * 60
-    file_age_in_days = existing_file_age.td.total_seconds() / seconds_in_a_day if existing_file_age else 0
+    file_age_in_days = (
+        existing_file_age.td.total_seconds() / seconds_in_a_day
+        if existing_file_age
+        else 0
+    )
 
     if existing_file_age is None or file_age_in_days >= minimum_age_in_days:
         pickle_me(obj, file_name_with_path)
         logger.info(f"Pickled object to {file_name_with_path}")
     else:
-        logger.info(f"Not pickled as {file_name_with_path}'s age {file_age_in_days:.2f} days is < {minimum_age_in_days}")
+        logger.info(
+            f"Not pickled as {file_name_with_path}'s age {file_age_in_days:.2f} days is < {minimum_age_in_days}"
+        )
 
-def handle_raws(): 
-    raw_files = get_files_from_patterns()
+
+def handle_raws(pattern: str = ""):
+    """Removes raw nakeds
+
+    Args:
+        pattern (str, optional): String pattern e.g. *nsenakeds*.pkl. Defaults to ''.
+    """
+    raw_files = get_files_from_patterns(pattern=pattern)
     if raw_files:
         ans = yes_or_no("Do you want to archive raw nakeds?")
-    
+
         if ans:
-            remove_raw_nakeds(save=True)
+            remove_raw_nakeds(pattern=pattern, save=True)
 
     else:
         print("No raw files to archive")
-        
+
 
 # --- TRANSFORMATIONS ---
+
 
 def to_list(data):
     """Converts any iterable to a list, and non-iterables to a list with a single element.
@@ -281,6 +331,7 @@ def to_list(data):
         return list(data)
     except TypeError:
         return [data]
+
 
 def split_dates(days: int = 365, chunks: int = 50) -> list:
     """Splits dates into buckets based on chunks.
@@ -316,26 +367,31 @@ def chunk_me(data, size: int = 25) -> list:
     Returns:
         A list of chunks, or None if the data type is not supported.
     """
-    
+
     if isinstance(data, (list, pd.Series, pd.DataFrame)):
-        return [data[i:i + size] for i in range(0, len(data), size)]
+        return [data[i : i + size] for i in range(0, len(data), size)]
     elif isinstance(data, set):
         data_list = list(data)
-        return [data_list[i:i + size] for i in range(0, len(data_list), size)]
-    
-    logger.error(f"Data type needs to be a list, pd.Series, pd.DataFrame, or set, not {type(data)}")
+        return [data_list[i : i + size] for i in range(0, len(data_list), size)]
+
+    logger.error(
+        f"Data type needs to be a list, pd.Series, pd.DataFrame, or set, not {type(data)}"
+    )
     return None
 
 
-
-def clean_ib_util_df(contracts: Union[list, pd.Series], eod=True, ist=True) -> Union[pd.DataFrame, None]:
+def clean_ib_util_df(
+    contracts: Union[list, pd.Series], eod=True, ist=True
+) -> Union[pd.DataFrame, None]:
     """Cleans ib_async's util.df to keep only relevant columns"""
-    
+
     # Ensure contracts is a list
     if isinstance(contracts, pd.Series):
         contracts = contracts.to_list()
     elif not isinstance(contracts, list):
-        logger.error(f"Invalid type for contracts: {type(contracts)}. Must be list or pd.Series.")
+        logger.error(
+            f"Invalid type for contracts: {type(contracts)}. Must be list or pd.Series."
+        )
         return None
 
     # Try to create DataFrame from contracts
@@ -344,21 +400,32 @@ def clean_ib_util_df(contracts: Union[list, pd.Series], eod=True, ist=True) -> U
     except (AttributeError, ValueError) as e:
         logger.error(f"Error creating DataFrame from contracts: {e}")
         return None
-    
+
     # Check if DataFrame is empty
     if udf.empty:
         return None
-    
+
     # Select and rename columns
-    udf = udf[['symbol', 'conId', 'secType', 'lastTradeDateOrContractMonth', 'strike', 'right']]
+    udf = udf[
+        [
+            "symbol",
+            "conId",
+            "secType",
+            "lastTradeDateOrContractMonth",
+            "strike",
+            "right",
+        ]
+    ]
     udf.rename(columns={"lastTradeDateOrContractMonth": "expiry"}, inplace=True)
-    
+
     # Convert expiry to UTC datetime
-    udf['expiry'] = udf['expiry'].apply(lambda x: convert_to_utc_datetime(x, eod=eod, ist=ist))
-    
+    udf["expiry"] = udf["expiry"].apply(
+        lambda x: convert_to_utc_datetime(x, eod=eod, ist=ist)
+    )
+
     # Assign contracts to DataFrame
-    udf['contract'] = contracts
-    
+    udf["contract"] = contracts
+
     return udf
 
 
@@ -381,9 +448,9 @@ def convert_to_utc_datetime(date_string, eod=False, ist=True):
         else:
             timezone = pytz.timezone("America/New_York")
             dt = dt.replace(hour=16, minute=0, second=0)
-        
+
         dt = timezone.localize(dt)
-    
+
     return dt.astimezone(pytz.UTC)
 
 
@@ -429,15 +496,15 @@ def fbfillnas(ser: pd.Series) -> pd.Series:
 def clean_symbols(symbols: str) -> list:
     """Cleans a symbol symbol or a list of symbols
     Arg
-      symbols: in commas eg. 'reliance, sbin' or just 'reliance' 
-    
-    """
-    config = load_config()
-    NSE2IB = config.get('NSE2IB')
+      symbols: in commas eg. 'reliance, sbin' or just 'reliance'
 
-    if ',' in symbols[0]:
-        symbols = [s.strip().upper() for s in symbols[0].split(',')]
-        
+    """
+    config = load_config("NSE")
+    NSE2IB = config.get("NSE2IB")
+
+    if "," in symbols[0]:
+        symbols = [s.strip().upper() for s in symbols[0].split(",")]
+
     else:
         symbols = [s.upper() for s in symbols]
 
@@ -445,29 +512,32 @@ def clean_symbols(symbols: str) -> list:
 
 
 def merge_and_overwrite_df(df1, df2):
-  """Merges df2 into df1, overwriting common columns and preserving order.
+    """Merges df2 into df1, overwriting common columns and preserving order.
 
-  Args:
-    df1: The base DataFrame.
-    df2: The DataFrame to merge into df1.
+    Args:
+      df1: The base DataFrame.
+      df2: The DataFrame to merge into df1.
 
-  Returns:
-    The merged DataFrame.
-  """
+    Returns:
+      The merged DataFrame.
+    """
 
-  # Identify columns unique to df2
-  new_cols = df2.columns.difference(df1.columns)
+    # Identify columns unique to df2
+    new_cols = df2.columns.difference(df1.columns)
 
-  # Merge df1 and df2 on index, using outer join to include all columns
-  merged_df = pd.merge(df1, df2[new_cols], left_index=True, right_index=True, how='outer')
+    # Merge df1 and df2 on index, using outer join to include all columns
+    merged_df = pd.merge(
+        df1, df2[new_cols], left_index=True, right_index=True, how="outer"
+    )
 
-  # Reorder columns to match df1
-  merged_df = merged_df[df1.columns.tolist() + new_cols.tolist()]
+    # Reorder columns to match df1
+    merged_df = merged_df[df1.columns.tolist() + new_cols.tolist()]
 
-  return merged_df
+    return merged_df
 
 
 # --- SEEKING ---
+
 
 def get_closest_strike(df, above=None):
     """
@@ -552,28 +622,30 @@ def get_prec(v: float, base: float) -> float:
 
 # --- APPENDING TO DATAFRAMES ---
 
-def append_safe_strikes(df: pd.DataFrame) -> pd.DataFrame:
+
+def append_safe_strikes(
+    df: pd.DataFrame, PUTSTDMULT: float, CALLSTDMULT: float
+) -> pd.DataFrame:
     """Appends safe-strikes and intrinsics from iv, undPrice and dte"""
 
-    config = load_config()
-    PUTSTDMULT = config.get("PUTSTDMULT")
-    CALLSTDMULT = config.get("CALLSTDMULT")
-
     # Calculate standard deviation
-    df['sdev'] = df['iv'] * df['undPrice'] * np.sqrt(df['dte'] / 365)
+    df["sdev"] = df["iv"] * df["undPrice"] * np.sqrt(df["dte"] / 365)
 
     # Calculate safe strikes
-    df['safe_strike'] = np.where(df['right'] == "P",
-                                 (df['undPrice'] - df['sdev'] * PUTSTDMULT).astype(int),
-                                 (df['undPrice'] + df['sdev'] * CALLSTDMULT).astype(int))
+    df["safe_strike"] = np.where(
+        df["right"] == "P",
+        (df["undPrice"] - df["sdev"] * PUTSTDMULT).astype(int),
+        (df["undPrice"] + df["sdev"] * CALLSTDMULT).astype(int),
+    )
 
     # Calculate intrinsic values
-    df['intrinsic'] = np.where(df['right'] == "P",
-                               np.maximum(df['strike'] - df['safe_strike'], 0),
-                               np.maximum(df['safe_strike'] - df['strike'], 0))
+    df["intrinsic"] = np.where(
+        df["right"] == "P",
+        np.maximum(df["strike"] - df["safe_strike"], 0),
+        np.maximum(df["safe_strike"] - df["strike"], 0),
+    )
 
     return df
-
 
 
 def append_black_scholes(df: pd.DataFrame, risk_free_rate: float) -> pd.DataFrame:
@@ -584,12 +656,12 @@ def append_black_scholes(df: pd.DataFrame, risk_free_rate: float) -> pd.DataFram
     """
 
     # Extract necessary columns
-    S = df['undPrice'].values
-    K = df['strike'].values
-    T = df['dte'].values / 365  # Convert days to years
+    S = df["undPrice"].values
+    K = df["strike"].values
+    T = df["dte"].values / 365  # Convert days to years
     r = risk_free_rate
-    sigma = df['iv'].values
-    option_type = df['right'].values
+    sigma = df["iv"].values
+    option_type = df["right"].values
 
     # Calculate d1 and d2
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
@@ -600,17 +672,15 @@ def append_black_scholes(df: pd.DataFrame, risk_free_rate: float) -> pd.DataFram
     put_prices = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
     # Assign prices based on option type
-    bs_prices = np.where(option_type == 'C', call_prices, put_prices)
+    bs_prices = np.where(option_type == "C", call_prices, put_prices)
 
     # Append the prices to the DataFrame
-    df['bsPrice'] = bs_prices
+    df["bsPrice"] = bs_prices
 
     return df
 
 
-
 def append_cos(df: pd.DataFrame) -> pd.DataFrame:
-
     """Append contract and order fields"""
 
     dfo = make_contracts_orders(df)
@@ -619,30 +689,27 @@ def append_cos(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def append_xPrice(df: pd.DataFrame) -> pd.DataFrame:
-
+def append_xPrice(df: pd.DataFrame, MINEXPROM: float) -> pd.DataFrame:
     """Append expected price, filter minimum rom and sort by likeliest"""
 
     # remove order column
-    df = df.drop(columns=['order'], errors='ignore')
-    
+    df = df.drop(columns=["order"], errors="ignore")
+
     # get maxprice
     maxPrice = np.maximum(df.price, df.bsPrice)
-    
+
     # get expected price
     xPrice = (df.intrinsic + maxPrice).apply(lambda x: max(get_prec(x, 0.05), 0.05))
-    df = df.assign(xPrice = xPrice)
-    
+    df = df.assign(xPrice=xPrice)
+
     # prevent divide by zero for rom
     margin = np.where(df.margin <= 0, np.nan, df.margin)
-    
+
     # calculate rom
     rom = df.xPrice * df.lot / margin * 365 / df.dte
     df = df.assign(rom=rom)
 
     # ensure minimum expected ROM
-    config = load_config()
-    MINEXPROM = config.get('MINEXPROM')
     df = df[df.rom > MINEXPROM].reset_index(drop=True)
 
     # sort by likeliest
@@ -652,6 +719,7 @@ def append_xPrice(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # --- BUILDING ---
+
 
 def make_contracts_orders(
     df: pd.DataFrame, EXCHANGE: str = "NSE", action: str = "SELL"
@@ -682,22 +750,21 @@ def make_contracts_orders(
 
 def arrange_orders(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
     """Arranges orders to get the best ROM and filters out excessive margins
-    
+
     Usage:
-      arrange_orders(df, 
-                   maxmargin=MAXMARGINPERORDER, 
+      arrange_orders(df,
+                   maxmargin=MAXMARGINPERORDER,
                    how_many=2,
                    puts_only=True)"""
 
-    MARKET = df.contract.iloc[0].exchange
+    df.contract.iloc[0].exchange
 
     # Takes maxmargin if it is provided. Else defaults it to 5,000 for SNP
-    maxmargin = kwargs.get('maxmargin', 5000)
-    how_many = kwargs.get('how_many', 2)
-    puts_only = kwargs.get('puts_only', False)
+    maxmargin = kwargs.get("maxmargin", 5000)
+    how_many = kwargs.get("how_many", 2)
+    puts_only = kwargs.get("puts_only", False)
 
     # files = get_files_from_patterns("/*nakeds*")
-
 
     # Sort by safe_strike: strike ratio to get the safest calls and puts
 
@@ -741,15 +808,14 @@ def arrange_orders(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
 
     # Sort the DataFrame by 'xPrice/price' in ascending order
     df_nakeds = df_nakeds.loc[
-        df_nakeds["xPrice"].
-            div(df_nakeds["price"]).
-            sort_values().index
+        df_nakeds["xPrice"].div(df_nakeds["price"]).sort_values().index
     ]
 
     return df_nakeds
 
 
 # --- COMPUTATIONS ---
+
 
 def black_scholes(
     S: float,  # underlying
@@ -776,48 +842,55 @@ def black_scholes(
 
 # --- FORMATTING / PRETTIFYING ---
 
+
 def arrange_df_columns(df: pd.DataFrame, col_map: str) -> list:
     """Extracts desired columns from df based on comma / tab / space sepeartors
-    
+
     Args:
       df: input dataframe
       col_map: comma | space | tab separated string of columns names
-    
+
     Returns:
       A list of ordered column names for the df
-    
+
     """
 
     cols = []
-    
+
     if isinstance(col_map, str):
         v = re.split(r"[,\t\s]+", col_map)
         cols = [s for s in v if s in df.columns]
-        
+
     return cols
 
 
 def pretty_print_df(df):
     """Pretty prints a pandas DataFrame to the console."""
     if not df.empty:
-        headers = df.columns.tolist()
-        print(tabulate(df, headers='keys',
-            floatfmt=".2f",))
+        print(
+            tabulate(
+                df,
+                headers="keys",
+                floatfmt=".2f",
+            )
+        )
     else:
         print("Nothing to print!!\n")
+
 
 def split_and_uppercase(s):
     if isinstance(s, (tuple, set)):
         # If it's a tuple or set, process each element
         result = []
         for item in s:
-            result.extend(re.split(r'[,\s]+', item))
+            result.extend(re.split(r"[,\s]+", item))
         return [item.upper() for item in result if item]
     else:
         # If it's a single string, process it directly
-        return [item.upper() for item in re.split(r'[,\s]+', s) if item]
+        return [item.upper() for item in re.split(r"[,\s]+", s) if item]
 
-# --- TEST BENCH --- 
+
+# --- TEST BENCH ---
 
 if __name__ == "__main__":
     ans = yes_or_no("Do you want to proceed?")

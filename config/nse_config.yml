@@ -7,20 +7,9 @@ CALLSTDMULT: 1.8
 MINEXPROM: 4
 MARGINPERORDER: 300000
 
-# For open orders
-ACTIVE_STATUS: 
-- ApiPending
-- PendingSubmit
-- PreSubmitted
-- Submitted
-
 # NSE ports and client IDs
 PORT: 3000
-LIVE_PORT: 3000
-PAPER_PORT: 3001
-
-SNP_LIVE_PORT: 1300
-SNP_PAPER_PORT: 1301
+PAPER: 3001
 
 CID: 10
 
