@@ -10,80 +10,23 @@
 - snp.py. Struggling to run async `IB().getMktData()` for price, iv.
 
 
-# Rules
-
-## Symbols
--------
-a. Every valid symbol should have at least one order in the system
-b. A Symbol without an underlying position should have one naked order
-c. An Underlying position should have two options:
-   - i. For Put shorts: a Covered Call sell and a Protective Put buy position
-   - ii. For Call Shorts:  a Covered Put sell and a Protective Call buy position    \n
-
-d. Put and Call buys without underlying positions are `orphaned`. They should have closing orders.
-
-## Orchestrator
-------------
-... will be continuously running to check for the following events.
-1. If the margin cushion is lower than 10% all open shorts for non-poisitions will be cancelled
-2. If there is an order fill
-   - selling price of all open shorts for non-positions will be bumped up
-   - the order fill will be journaled
-   - algo will go to `recalculate` mode
-   - selling price of all open shorts for non-positions will be modified per re-calculation
-   - algo will go to monitor (listening) mode
-3. Will schedule requests for information, like `get_portfolio()` in a separate thread.
-
-# Programs (sequential)
-1. `naked_orders()`
-   - `fnos()` ... list of fnos (weekly preferred. includes both stocks and index)
-   - `bans()` ... banned stocks of the exchange
-   - `underlyings()` ... get `price()`, `iv()`, `closest_opt_price()` and `closest_margin()`
-   - `chains()` ... all option chains limited by a `DTEMAX` that is typically 50 days.
-   - `targets()` ... `target_calls()` based on `CALLSTDMULT` and `target_puts()` based on `PUTSTDMULT` with `xPrice`
-   - `place_nakeds()` ... place targets, after checking `get_portfolio()` and `get_open_orders()`
-
-2. `opt_closures()` - create closing orders based on profitability scaled to dte from `fill_date()`. 
-
-3. `cover_orders()` ... for stock positions with `COVERSTD` that is typically 1 SD
-
-4. `protect_orders()` ... for stock positions with `PROTECTSTD` that is tyically 1 SD
-
-## ---- ON DEMAND ----
-
-5. `get_portfolio()` ... with `cushion()`, `pnl()` and `risk()`
-
-6. `get_openorders()` 
-
-7. `fill_date()` ... gets the order fill date from /data/xn_history (or) IB report 
-
-6. `und_history()` ... OHLCs of underlyings. Updated in `delta` mode for missing days.
-
-7. `opt_history()` ... OHLCs of options. Updated in `delta` mode for missing days.
-
-## ---- CONTINUOUS MONITORING ----
-
-8. EVENT: MARGIN_BREACH
-9. EVENT: ORDER_FILL
-
-10. `bump_price()` ... by 10% upon order fill
-11. `recalculate()` ... recalculate xPrice after a re-run of `naked_orders()` function.
-
-
 # To-do
 
 - [ ] `place_nakeds()` function for orders
 - [ ] Make `get_price_iv()` asynchronously
-- [ ] Make `snp.py` with:
-   - [ ] qualified underlyings
-   - [ ] price, margins and iv for underlyings
-   - [ ] chains for `df_all` options
+
+## For SNP
+- [ ] Make `naked_orders()` for `snp.py` with:
+
+   - [ ] qualified symbols with underlyings
+   - [ ] `chains()` for `df_all` options, limited to `dte` range
+   - [ ] `targets()`
 
 
 - [ ] Option to pick up margins from offline
 - [ ] Extend to expiries beyond earliest for `nse`
 
-
+## General utilities
 - [ ] modify an order - from df_nakeds
 - [ ] cancel an order function from df_nakeds if it is ACTIVE
 - [ ] mass order delete function
@@ -96,6 +39,63 @@ d. Put and Call buys without underlying positions are `orphaned`. They should ha
 - [ ] Self-sufficient continuous-monitoring and autonomous option bots
 
 ---
+
+# Rules
+
+## Symbols
+1. Every valid symbol should have at least one order in the system
+2. A Symbol without an underlying position should have one naked order
+3. An Underlying position should have two options:
+   - For Put shorts: a Covered Call sell and a Protective Put buy position
+   - For Call Shorts:  a Covered Put sell and a Protective Call buy position
+4. Put and Call buys without underlying positions are `orphaned`. They should have closing orders.
+
+## Orchestrator
+... will be continuously running to check for the following events.
+1. If the margin cushion is lower than 10% all open shorts for non-poisitions will be cancelled
+2. If there is an order fill
+   - selling price of all open shorts for non-positions will be bumped up
+   - the order fill will be journaled
+   - algo will go to `recalculate` mode
+   - selling price of all open shorts for non-positions will be modified per re-calculation
+   - algo will go to monitor (listening) mode
+3. Will schedule requests for information, like `get_portfolio()` in a separate thread.
+
+# Programs (sequential where possible)
+1. `naked_orders()`
+   - `fnos()` ... list of fnos (weekly preferred. includes both stocks and index)
+   - `bans()` ... banned stocks of the exchange
+   - `underlyings()` ... `price()`, `iv()`, `closest_opt_price()` and `closest_margin()`
+   - `chains()` ... all option chains limited by a `DTEMAX` that is typically 50 days.
+   - `targets()` ... `target_calls()` based on `CALLSTDMULT` and `target_puts()` based on `PUTSTDMULT` with `xPrice`
+   - `place_nakeds()` ... place targets, after checking `get_portfolio()` and `get_open_orders()`
+
+2. `opt_closures()` - create closing orders based on profitability scaled to dte from `fill_date()`. 
+
+3. `cover_orders()` ... for stock positions with `COVERSTD` that is typically 1 SD
+
+4. `protect_orders()` ... for stock positions with `PROTECTSTD` that is tyically 1 SD
+
+## ---- ON DEMAND ----
+
+1. `get_portfolio()` ... with `cushion()`, `pnl()` and `risk()`
+
+2. `get_openorders()` 
+
+3. `fill_date()` ... gets the order fill date from /data/xn_history (or) IB report 
+
+4. `und_history()` ... OHLCs of underlyings. Updated in `delta` mode for missing days.
+
+5. `opt_history()` ... OHLCs of options. Updated in `delta` mode for missing days.
+
+## ---- CONTINUOUS MONITORING ----
+
+1. EVENT: MARGIN_BREACH
+2. EVENT: ORDER_FILL
+
+3. `bump_price()` ... by 10% upon order fill
+4. `recalculate()` ... recalculate xPrice after a re-run of `naked_orders()` function.
+
 
 # Installation notes
 
@@ -112,12 +112,11 @@ d. Put and Call buys without underlying positions are `orphaned`. They should ha
 - For every package to be installed use `pdm add \<package-name> -d` 
    - the `-d` is for development environment
 
----
-
-# Run after installation
+## Run after installation
 - First activate venv with `pdm venv activate`
 
-## Running with CLI
+### Running with CLI
+- Use `click` to set up. 
 - See available CLI run functions with `pdm run run.py --help`
 - Run the needed script with `python run.py` `<function-name>` `<--arg_name> <arg>`
 
