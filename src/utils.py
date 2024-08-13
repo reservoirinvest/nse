@@ -14,7 +14,7 @@ import pandas as pd
 import pytz
 import yaml
 from dateutil import parser
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from from_root import from_root
 from ib_async import MarketOrder, Option, util
 from loguru import logger
@@ -23,6 +23,13 @@ from scipy.stats import norm
 from tabulate import tabulate
 
 ROOT = from_root()
+
+# Ensure the log directory exists
+log_dir = './log'
+os.makedirs(log_dir, exist_ok=True)
+
+# Configure logger to log to a file named after the script
+logger.add(f"{log_dir}/utils.log", rotation="1 MB")
 
 
 class Timer:
@@ -74,7 +81,6 @@ class Timediff:
 
 # --- CONFIGURATION FROM ENVIRONMENT ----
 
-
 def choose_market():
     while True:
         try:
@@ -103,13 +109,12 @@ def choose_market():
 def load_config(MARKET: str):
     """Loads configuration from .env and config.yml files."""
 
-    # Load environment variables from .env file
-    load_dotenv()
-
-    # Add configs from YAML file
-
     ROOT = from_root()
 
+    dotenv_path = find_dotenv()
+    load_dotenv(dotenv_path=dotenv_path)  # loads environment from .env
+
+    # Add configs from YAML file
     if MARKET.upper() == "NSE":
         with open(ROOT / "config" / "nse_config.yml", "r") as f:
             config = yaml.safe_load(f)
@@ -123,7 +128,6 @@ def load_config(MARKET: str):
             config[key] = value
 
     return config
-
 
 # --- INTERACTIONS ---
 
@@ -619,6 +623,24 @@ def get_prec(v: float, base: float) -> float:
 
     return output
 
+
+def get_port(MARKET: str, PAPER: bool=None) -> int:
+    """Gets port no of IB.
+
+    Args:
+        MARKET (str): SNP | NSE
+        PAPER (bool, optional): True if paper port is needed. Defaults to None.
+
+    Returns:
+        int: _description_
+    """
+    config = load_config(MARKET=MARKET.upper())
+    if PAPER:
+        port = config.get("PAPER")
+    else:
+        port = config.get('PORT')
+
+    return port
 
 # --- APPENDING TO DATAFRAMES ---
 

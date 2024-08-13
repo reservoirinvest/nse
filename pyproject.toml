@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.1.7",
     "jupyterlab-git>=0.50.1",
     "ib-insync>=0.9.86",
+    "ib-async>=1.0.3",
 ]
 requires-python = "==3.11.*"
 readme = "README.md"

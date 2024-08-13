@@ -12,7 +12,6 @@
 
 # To-do
 
-- [ ] `place_nakeds()` function for orders
 - [ ] Make `get_price_iv()` asynchronously
 
 ## For SNP

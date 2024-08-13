@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["cross_platform", "inherit_metadata"]
 lock_version = "4.4.1"
-content_hash = "sha256:435bdb3eff7631230cbfad66d8c38bca13b018c14777b0957e4a62caa8808a5d"
+content_hash = "sha256:66ac554aeb261e4ff67ee3fc5e8ad3c44b559cddfde7493937dbe25e1b2b7796"
 
 [[package]]
 name = "anyio"
@@ -557,7 +557,7 @@ name = "ib-async"
 version = "1.0.3"
 requires_python = ">=3.10"
 summary = "Python sync/async framework for Interactive Brokers API"
-groups = ["dev"]
+groups = ["default", "dev"]
 dependencies = [
     "eventkit",
     "nest-asyncio",

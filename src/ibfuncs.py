@@ -10,7 +10,7 @@ from typing import List, Union
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from from_root import from_root
 from ib_async import IB, LimitOrder, MarketOrder, Option, Order, util
 from loguru import logger
@@ -21,7 +21,8 @@ from utils import (arrange_orders, clean_ib_util_df, handle_raws, load_config,
                    make_contracts_orders, pickle_me, to_list)
 
 ROOT = from_root()
-load_dotenv(dotenv_path=ROOT)  # loads environment from .env
+dotenv_path = find_dotenv()
+load_dotenv(dotenv_path=dotenv_path)  # loads environment from .env
 
 LOGLEVEL = os.getenv("LOGLEVEL", "DEBUG")
 ACTIVESTATUS = os.getenv("ACTIVESTATUS", "")
@@ -35,7 +36,6 @@ util.logToFile(log_file, level=level)
 open(log_file, "w").close()  # Wipe the logfile clean!
 
 # --- CLASSES AND THEIR METHODS
-
 
 @dataclass
 class OpenOrder:
@@ -360,6 +360,48 @@ def place_orders(ib: IB, cos: Union[tuple, list], blk_size: int = 25) -> List:
     return trades
 
 
+def cancel_orders(ib: IB, orders: list, blk_size: int = 25) -> list:
+    """Cancels orders if they exist
+
+    Args:
+        ib (IB): a live IB connection
+        orders (list): list of orders to be cancelled
+        blk_size (int, optional): cancel in chunks. Defaults to 25.
+
+    Returns:
+        list: list of cancelled orders
+    """
+
+    cancels = []
+    order_blks = [orders[i : i + blk_size] for i in range(0, len(orders), blk_size)]
+    for b in tqdm(order_blks):
+        for o in b:
+            td = ib.cancelOrder(o)
+            cancels.append(td)
+        ib.sleep(0.75)
+
+    return cancels
+
+
+def cancel_all_orders(ib: IB) -> list:
+    """Cancels all Open Orders
+
+    Args:
+        ib (IB): an active IB connection
+
+    Returns:
+        list: list of cancelled open orders
+    """
+
+    df_ords = get_open_orders(ib)
+    orders = df_ords.order.to_list()
+
+    cancels = cancel_orders(ib, orders)
+
+    logger.info(f"Cancelled {len(orders)} orders")
+
+    return cancels
+
 def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
     """Gets open orders - blocking version"""
 
@@ -454,13 +496,6 @@ async def account_values(ib: IB) -> dict:
     sorted_dict = {d_map.get(key): acc.get(key) for key in sorted_keys}
 
     return sorted_dict
-
-
-def cancel_all(port: int):
-    """Cancels all orders"""
-
-    with IB().connect(port=port, clientId=10) as ib:
-        ib.reqGlobalCancel()
 
 
 if __name__ == "__main__":

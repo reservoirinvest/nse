@@ -1,3 +1,4 @@
+import os
 import click
 from typing import Union
 import pandas as pd
@@ -7,21 +8,29 @@ from ibfuncs import get_open_orders, quick_pf
 from nse import get_fnos, make_earliest_nse_nakeds
 from utils import clean_symbols, pretty_print_df
 
+
+# Ensure the log directory exists
+log_dir = './log'
+os.makedirs(log_dir, exist_ok=True)
+
+# Configure logger to log to a file named after the script
+logger.add(f"{log_dir}/run.log", rotation="1 MB")
+
 def nse_nakeds(save: bool, fnos: Union[list, str, None]) -> pd.DataFrame:
     """Generates nakeds for NSE
 
     Args:
         save (bool): Pickles to `data/raw`
-        fnos (Union[list, str, None]): If fno or a list doesn't save 
+        fnos (Union[list, str, None]): If fno or a list doesn't save
 
     Returns:
         pd.DataFrame: Naked options df
     """
     df = pd.DataFrame()  # Initialize df to avoid reference before assignment error
-    
+
     if fnos: # prevents saving if fnos are given
         save = False
-    
+
     fnos = get_fnos(fnos)
 
     # Make the nakeds
@@ -51,16 +60,17 @@ def get_portfolio(port: int, clientId: int=10) -> pd.DataFrame:
     """
     with IB().connect(port=port, clientId=clientId) as ib:
         df = quick_pf(ib=ib)
+        df = df.drop(columns='contract')
         pretty_print_df(df)
     return df
 
-def get_orders(symbols: Union[str, list, None], 
-              active: bool, 
-              port: int, 
+def get_orders(symbols: Union[str, list, None],
+              active: bool,
+              port: int,
               cid:int) -> pd.DataFrame:
     """Gets all open orders. Needs IB-TWS or IBG to be running.
     Args:
-       active: if True shows only ACTIVE orders:   
+       active: if True shows only ACTIVE orders:
        pending, pendingSubmit, presubmit and submitted
        port: Port of active IB client
        cid: Set as 10 for all API orders
@@ -76,6 +86,7 @@ def get_orders(symbols: Union[str, list, None],
         if symbols:
             symbols = clean_symbols(symbols)
             df = df[df.symbol.isin(symbols)]
+
         pretty_print_df(df)
 
     return df
@@ -100,7 +111,7 @@ def market_selection():
         return market_selection()
 
 @click.command()
-@click.option('--function', type=click.Choice(['nse_nakeds', 'get_orders', 'get_portfolio'], case_sensitive=False), required=True, help='Function to execute.')
+@click.option('--function', '-f', type=click.Choice(['nse_nakeds', 'get_orders', 'get_portfolio'], case_sensitive=False), required=True, help='Function to execute.')
 @click.option('--save', is_flag=True, default=True, help='Pickles to `data/raw` if set (only for nse_nakeds).')
 @click.option('--fnos', type=str, multiple=True, help='FNOs as a list of strings or a single string. Use comma to separate multiple values (only for nse_nakeds).')
 @click.option('--port', type=int, help='Port number for IB connection (required for get_orders and get_portfolio).')
@@ -122,7 +133,7 @@ def cli(function, save, fnos, port, clientid, active, symbols):
         if port is None:
             raise click.BadParameter('Port is required for get_portfolio.')
         get_portfolio(port, clientid)
-    
+
     # Print or process the result as needed
     # print(result)
 
