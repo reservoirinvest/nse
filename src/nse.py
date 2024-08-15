@@ -353,7 +353,7 @@ def repo_rate():
     return float(rbi)
 
 
-# ------ CORE NSE FUNCTIONS ----
+# *------ CORE NSE FUNCTIONS ----
 
 
 def make_earliest_nse_nakeds(
@@ -408,7 +408,7 @@ def make_earliest_nse_nakeds(
     return df
 
 
-# --- SEEKING ---
+# *--- SEEKING ---
 
 
 def make_early_opts_for_nse_symbol(
@@ -522,7 +522,7 @@ def get_fnos(fnos: Union[str, list, None]) -> Union[list, None]:
     return fnos
 
 
-# ---- CLEANING ---
+# *---- CLEANING ---
 
 
 def clean_stock_history(result: list) -> pd.DataFrame:
@@ -618,7 +618,7 @@ def clean_index_history(results: list) -> pd.DataFrame:
     return df
 
 
-# --- CONVERTING ---
+# *--- CONVERTING ---
 
 
 def nse2ib(nse_list):

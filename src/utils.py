@@ -79,7 +79,7 @@ class Timediff:
         self.seconds = seconds
 
 
-# --- CONFIGURATION FROM ENVIRONMENT ----
+# *--- CONFIGURATION FROM ENVIRONMENT ----
 
 def choose_market():
     while True:
@@ -129,7 +129,7 @@ def load_config(MARKET: str):
 
     return config
 
-# --- INTERACTIONS ---
+# *--- INTERACTIONS ---
 
 
 def yes_or_no(question: str, default="n") -> bool:
@@ -155,7 +155,7 @@ def yes_or_no(question: str, default="n") -> bool:
             print("Please answer yes or no.")
 
 
-# --- FILE HANDLING ---
+# *--- FILE HANDLING ---
 
 
 def pickle_me(obj, file_name_with_path: Path):
@@ -318,7 +318,7 @@ def handle_raws(pattern: str = ""):
         print("No raw files to archive")
 
 
-# --- TRANSFORMATIONS ---
+# *--- TRANSFORMATIONS ---
 
 
 def to_list(data):
@@ -422,10 +422,13 @@ def clean_ib_util_df(
     ]
     udf.rename(columns={"lastTradeDateOrContractMonth": "expiry"}, inplace=True)
 
-    # Convert expiry to UTC datetime
-    udf["expiry"] = udf["expiry"].apply(
-        lambda x: convert_to_utc_datetime(x, eod=eod, ist=ist)
-    )
+    # Convert expiry to UTC datetime, if it exists
+    if len(udf.expiry.iloc[0]) != 0:
+        udf["expiry"] = udf["expiry"].apply(
+            lambda x: convert_to_utc_datetime(x, eod=eod, ist=ist)
+        )
+    else:
+        udf["expiry"] = pd.NaT
 
     # Assign contracts to DataFrame
     udf["contract"] = contracts
@@ -478,24 +481,6 @@ def fbfillnas(ser: pd.Series) -> pd.Series:
 
     return ser.ffill().bfill()
 
-    # # Old Code...
-
-    # s = ser.copy()
-
-    # # Find the first non-NaN value
-    # first_non_nan = s.dropna().iloc[0]
-
-    # # Fill first NaN with the first non-NaN value
-    # s.iloc[0] = first_non_nan
-
-    # # Fill remaining NaN values with the next valid value
-    # s = s.fillna(s.bfill())
-
-    # # Fill remaining NaN values with the previous valid value
-    # s = s.fillna(s.ffill())
-
-    # return ser.fillna(s)
-
 
 def clean_symbols(symbols: str) -> list:
     """Cleans a symbol symbol or a list of symbols
@@ -540,7 +525,20 @@ def merge_and_overwrite_df(df1, df2):
     return merged_df
 
 
-# --- SEEKING ---
+def split_symbol_price_iv(prices_dict: dict) -> pd.DataFrame:
+    """Splits symbol, prices and ivs into a df.
+    To be used after get_mkt_prices()"""
+
+    symbols, prices, ivs = zip(
+        *((symbol, price, iv) for symbol, (price, iv) in prices_dict.items())
+    )
+
+    df_prices = pd.DataFrame({"symbol": symbols, "price": prices, "iv": ivs})
+
+    return df_prices
+
+
+# *--- SEEKING ---
 
 
 def get_closest_strike(df, above=None):
@@ -642,7 +640,8 @@ def get_port(MARKET: str, PAPER: bool=None) -> int:
 
     return port
 
-# --- APPENDING TO DATAFRAMES ---
+
+# *--- APPENDING TO DATAFRAMES ---
 
 
 def append_safe_strikes(
@@ -740,7 +739,7 @@ def append_xPrice(df: pd.DataFrame, MINEXPROM: float) -> pd.DataFrame:
     return df
 
 
-# --- BUILDING ---
+# *--- BUILDING ---
 
 
 def make_contracts_orders(
@@ -836,7 +835,7 @@ def arrange_orders(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
     return df_nakeds
 
 
-# --- COMPUTATIONS ---
+# *--- COMPUTATIONS ---
 
 
 def black_scholes(
@@ -862,7 +861,7 @@ def black_scholes(
     return price
 
 
-# --- FORMATTING / PRETTIFYING ---
+# *--- FORMATTING / PRETTIFYING ---
 
 
 def arrange_df_columns(df: pd.DataFrame, col_map: str) -> list:
@@ -912,7 +911,7 @@ def split_and_uppercase(s):
         return [item.upper() for item in re.split(r"[,\s]+", s) if item]
 
 
-# --- TEST BENCH ---
+# *--- TEST BENCH ---
 
 if __name__ == "__main__":
     ans = yes_or_no("Do you want to proceed?")

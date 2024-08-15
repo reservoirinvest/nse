@@ -15,9 +15,6 @@ from loguru import logger
 from tqdm.asyncio import tqdm
 from utils import chunk_me, clean_ib_util_df, load_config, to_list
 
-# ***** ==== (END) IMPORTS TO OPTIMIZE *****
-
-
 ROOT = from_root()
 
 PKL = ROOT / "data" / "zpkl"
@@ -160,126 +157,6 @@ async def assemble_snp_underlyings(port: int) -> dict:
         )
 
     return qualified_contracts
-
-
-# --- SEEKERS ---
-# ---------------
-
-
-async def get_tick_data(ib: IB, c: Contract, delay: float = 0):
-    """
-    [async] Gets tick-by-tick data
-    Quick when market is open
-    Takes ~6 secs after market hours.
-    No impliedVolatility
-
-    Parameters:
-    ib (IB): The IB instance for API interaction.
-    c (Contract): The contract for which to get tick data.
-    delay (float): Optional delay before returning data.
-
-    Returns:
-    ticker: The tick-by-tick data for the given contract.
-    """
-
-    # Request tick-by-tick data for the given contract asynchronously
-    ticker = await ib.reqTickersAsync(c)
-
-    # Introduce an optional delay if specified
-    await asyncio.sleep(delay)
-
-    # Return the retrieved ticker data
-    return ticker
-
-
-async def get_market_data(ib: IB, c: Contract, sleep: float = 2):
-    """
-    [async] Get marketPrice including implied volatility
-    Pretty quick when market is closed
-    """
-    tick = ib.reqMktData(c, genericTickList="106")
-    try:
-        await asyncio.sleep(sleep)
-    finally:
-        ib.cancelMktData(c)
-
-    return tick
-
-
-async def get_a_price_iv(ib, contract, sleep: float = 2) -> dict:
-    """[async] Computes price and IV of a contract.
-
-    OUTPUT: dict{localsymbol, price, iv}
-
-    Could take up to 12 seconds in case live prices are not available"""
-
-    mkt_data = await get_market_data(ib, contract, sleep)
-    undPrice = mkt_data.marketPrice()
-
-    if math.isnan(undPrice):
-        undPrice = mkt_data.close
-        if math.isnan(undPrice):
-            tick_data = await get_tick_data(ib, contract)
-            tick_data_price = tick_data[0].marketPrice()
-            undPrice = (
-                tick_data_price
-                if not math.isnan(tick_data_price)
-                else tick_data[0].close
-            )
-            if math.isnan(undPrice):
-                logger.info(f"No price found for {contract.localSymbol}!")
-
-    iv = mkt_data.impliedVolatility
-    return {"localsymbol": contract.localSymbol, "price": undPrice, "iv": iv}
-
-
-async def get_mkt_prices(
-    port: int, contracts: list, chunk_size: int = 44, sleep: int = 7
-) -> pd.DataFrame:
-    """[async] A faster way to get market prices."""
-
-    contracts = to_list(contracts)
-    chunks = chunk_me(contracts, chunk_size)
-    results = dict()
-
-    ib = await IB().connectAsync(port=port)
-    try:
-        for cts in tqdm(chunks, desc="Mkt prices with IVs"):
-            tasks = [get_a_price_iv(ib, c, sleep) for c in cts]
-            res = await asyncio.gather(*tasks)
-
-            for r in res:
-                symbol, price, iv = r
-                results[symbol] = (price, iv)
-
-        df_prices = split_symbol_price_iv(results)
-        df_prices = pd.merge(
-            clean_ib_util_df(contracts).iloc[:, :6], df_prices, on="symbol"
-        )
-
-        # remove unnecessary columns (for secType == `STK`)
-        keep_cols = ~(
-            (df_prices == 0).all() | (df_prices == "").all() | df_prices.isnull().all()
-        )
-
-        df_prices = df_prices.loc[:, keep_cols[keep_cols is True].index]
-    finally:
-        await ib.disconnectAsync()
-
-    return df_prices
-
-
-def split_symbol_price_iv(prices_dict: dict) -> pd.DataFrame:
-    """Splits symbol, prices and ivs into a df.
-    To be used after get_mkt_prices()"""
-
-    symbols, prices, ivs = zip(
-        *((symbol, price, iv) for symbol, (price, iv) in prices_dict.items())
-    )
-
-    df_prices = pd.DataFrame({"symbol": symbols, "price": prices, "iv": ivs})
-
-    return df_prices
 
 
 if __name__ == "__main__":

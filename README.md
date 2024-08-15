@@ -6,13 +6,13 @@
 4. Class (OOP) based with stock and option bots
 
 ## Left at
-- _order.ipynb. update ibfuncs.py with `place_nakeds()` function, to cater to both snp and nse.
-- snp.py. Struggling to run async `IB().getMktData()` for price, iv.
+- `/test/snp_naked.ipynb` - trying to get market price with IV.
 
 
 # To-do
 
 - [ ] Make `get_price_iv()` asynchronously
+- [ ] _order.ipynb. update ibfuncs.py with `place_nakeds()` function, to cater to both snp and nse.
 
 ## For SNP
 - [ ] Make `naked_orders()` for `snp.py` with:

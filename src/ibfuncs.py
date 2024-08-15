@@ -1,4 +1,4 @@
-# --- IBKR API SPECIFIC FUNCTIONS ----
+# * --- IBKR API SPECIFIC FUNCTIONS ----
 # ====================================
 
 import asyncio
@@ -17,8 +17,8 @@ from loguru import logger
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
 
-from utils import (arrange_orders, clean_ib_util_df, handle_raws, load_config,
-                   make_contracts_orders, pickle_me, to_list)
+from utils import (arrange_orders, clean_ib_util_df, get_port, handle_raws,
+                   load_config, make_contracts_orders, pickle_me, to_list)
 
 ROOT = from_root()
 dotenv_path = find_dotenv()
@@ -27,7 +27,7 @@ load_dotenv(dotenv_path=dotenv_path)  # loads environment from .env
 LOGLEVEL = os.getenv("LOGLEVEL", "DEBUG")
 ACTIVESTATUS = os.getenv("ACTIVESTATUS", "")
 
-# --- SETTING LOGS ----
+# * --- SETTING LOGS ----
 
 # Set ib_async logs to file, for loguru to capture
 level = logging.getLevelNamesMapping().get(LOGLEVEL)
@@ -92,7 +92,7 @@ def empty_the_df(df):
     return empty_df
 
 
-# --- IB BLOCKING FUNCTIONS ---
+# *--- IB BLOCKING FUNCTIONS ---
 
 
 def get_ib_margin(contract: Option, order: MarketOrder, port: int) -> dict:
@@ -157,10 +157,7 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
     return df_opts
 
 
-# --- IB ASYNC FUNCTIONS ---
-
-# *---- Qualifying ----
-
+# *---- QUALIFYING ----
 
 async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"):
     """[async] Qualify contracts asynchronously"""
@@ -179,7 +176,87 @@ async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"
     return result
 
 
-# *---- Async margins and commissions -----
+
+# *--- SEEKING ---
+
+def get_ib(MARKET:str, cid: int=10) -> IB:
+    """Gets an active IB port for context managers
+
+    Args:
+        MARKET (str): NSE | SNP
+        cid (int, optional): clientId for IB. Defaults to 10.
+
+    Returns:
+        IB: an active IB connection
+    """
+
+    port = get_port(MARKET)
+    return IB().connect(port=port, clientId=cid)
+
+
+def quick_pf(ib: IB) -> Union[None, pd.DataFrame]:
+    """Gets the portfolio dataframe"""
+    pf = ib.portfolio()  # returns an empty [] if there is nothing in the portfolio
+
+    if pf != []:
+        df_pf = util.df(pf)
+        df_pf = (util.df(list(df_pf.contract)).iloc[:, :6]).join(
+            df_pf.drop(columns=["account"])
+        )
+        df_pf = df_pf.rename(
+            columns={
+                "lastTradeDateOrContractMonth": "expiry",
+                "marketPrice": "mktPrice",
+                "marketValue": "mktVal",
+                "averageCost": "avgCost",
+                "unrealizedPNL": "unPnL",
+                "realizedPNL": "rePnL",
+            }
+        )
+    else:
+        df_pf = Portfolio().empty()
+
+    return df_pf
+
+
+async def account_values(ib: IB) -> dict:
+    """Gets account values
+
+    Args:
+        ib (IB): an active connection
+
+    Returns:
+        dict: current nlv, cash and margins
+    """
+
+    df_acc = util.df(ib.accountValues())
+
+    d_map = {
+        "TotalCashBalance": "cash",
+        "Cushion": "cushion",
+        "NetLiquidation": "nlv",
+        "InitMarginReq": "init_margin",
+        "EquityWithLoanValue": "equity_val",
+        "MaintMarginReq": "maint_margin",
+        "realizedPnL": "pnl_real",
+        "UnrealizedPnL": "pnl_unreal",
+        "LookAheadAvailableFunds": "funds_avlbl",
+    }
+
+    # get account values as a dictionary
+    df_out = df_acc[df_acc.tag.isin(d_map.keys())]
+    acc = df_out.set_index("tag").value.apply(float).to_dict()
+
+    # sort account values based on d_map's order
+    order = list(d_map.values())
+    order_index = {key: index for index, key in enumerate(order)}
+    sorted_keys = sorted(d_map.keys(), key=lambda x: order_index.get(x, float("inf")))
+    sorted_dict = {d_map.get(key): acc.get(key) for key in sorted_keys}
+
+    return sorted_dict
+
+
+# *---- Margins and commissions -----
 
 
 async def get_one_margin(ib, contract, order, timeout):
@@ -245,8 +322,7 @@ async def marginsAsync(
     return df_mcom
 
 
-# --- ORDER HANDLING (BLOCKING) ---
-
+# * --- ORDER HANDLING ---
 
 def order_nakeds(
     df_opts: pd.DataFrame,
@@ -312,7 +388,6 @@ def order_nakeds(
         logger.info(f"Successfully placed {len(ordered)} orders")
 
     return ordered
-
 
 def make_ib_orders(df: pd.DataFrame) -> tuple:
     """Make (contract, order) tuples"""
@@ -434,68 +509,6 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
             dfo = dfo[dfo.status.isin(ACTIVESTATUS)]
 
     return dfo
-
-
-def quick_pf(ib) -> Union[None, pd.DataFrame]:
-    """Gets the portfolio dataframe"""
-    pf = ib.portfolio()  # returns an empty [] if there is nothing in the portfolio
-
-    if pf != []:
-        df_pf = util.df(pf)
-        df_pf = (util.df(list(df_pf.contract)).iloc[:, :6]).join(
-            df_pf.drop(columns=["account"])
-        )
-        df_pf = df_pf.rename(
-            columns={
-                "lastTradeDateOrContractMonth": "expiry",
-                "marketPrice": "mktPrice",
-                "marketValue": "mktVal",
-                "averageCost": "avgCost",
-                "unrealizedPNL": "unPnL",
-                "realizedPNL": "rePnL",
-            }
-        )
-    else:
-        df_pf = Portfolio().empty()
-
-    return df_pf
-
-
-async def account_values(ib: IB) -> dict:
-    """Gets account values
-
-    Args:
-        ib (IB): an active connection
-
-    Returns:
-        dict: current nlv, cash and margins
-    """
-
-    df_acc = util.df(ib.accountValues())
-
-    d_map = {
-        "TotalCashBalance": "cash",
-        "Cushion": "cushion",
-        "NetLiquidation": "nlv",
-        "InitMarginReq": "init_margin",
-        "EquityWithLoanValue": "equity_val",
-        "MaintMarginReq": "maint_margin",
-        "UnrealizedPnL": "pnl_real",
-        "UnrealizedPnL": "pnl_unreal",
-        "LookAheadAvailableFunds": "funds_avlbl",
-    }
-
-    # get account values as a dictionary
-    df_out = df_acc[df_acc.tag.isin(d_map.keys())]
-    acc = df_out.set_index("tag").value.apply(float).to_dict()
-
-    # sort account values based on d_map's order
-    order = list(d_map.values())
-    order_index = {key: index for index, key in enumerate(order)}
-    sorted_keys = sorted(d_map.keys(), key=lambda x: order_index.get(x, float("inf")))
-    sorted_dict = {d_map.get(key): acc.get(key) for key in sorted_keys}
-
-    return sorted_dict
 
 
 if __name__ == "__main__":
