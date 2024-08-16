@@ -4,14 +4,15 @@
 import io
 import json
 from datetime import datetime, timedelta, timezone
+import sys
 from typing import List, Union
 
 import numpy as np
 import pandas as pd
 import requests
 from from_root import from_root
-from ib_async import IB
-from ibfuncs import marginsAsync
+from ib_async import IB, util
+from ibfuncs import get_open_orders, make_ib_orders, marginsAsync, place_orders, quick_pf
 from loguru import logger
 from pandas import json_normalize
 from tqdm import tqdm
@@ -21,6 +22,7 @@ from utils import (
     append_cos,
     append_safe_strikes,
     append_xPrice,
+    arrange_orders,
     convert_to_numeric,
     convert_to_utc_datetime,
     delete_files,
@@ -28,6 +30,8 @@ from utils import (
     get_files_from_patterns,
     get_pickle,
     get_pickle_suffix,
+    handle_nse_raws,
+    how_many_days_old,
     load_config,
     merge_and_overwrite_df,
     pickle_me,
@@ -355,7 +359,6 @@ def repo_rate():
 
 # *------ CORE NSE FUNCTIONS ----
 
-
 def make_earliest_nse_nakeds(
     fnos: Union[List, set], save: bool = False
 ) -> pd.DataFrame:
@@ -406,6 +409,85 @@ def make_earliest_nse_nakeds(
     timer.stop()
 
     return df
+
+# *--- Ordering ---
+
+def order_nse_nakeds() -> Union[None, pd.DataFrame]:
+    """Places NSE orders after checking portfolio and open orders
+
+    Returns:
+        Union[None, pd.DataFrame]: _description_
+    """
+
+    # Set the port
+    config = load_config(MARKET='NSE')
+    port = config.get('PORT')
+    MARGINPERORDER = config.get('MARGINPERORDER')
+
+    # Handle Raws
+    pattern = str(f"*{MARKET.lower()}nakeds*.pkl")
+    handle_nse_raws(pattern=pattern)
+
+    # save df to nse_nakeds in ./data
+    file_path = ROOT / 'data' / 'nse_nakeds.pkl'
+
+    ## Check the age of df_pickles, before ordering
+    txt = f"df_nakeds.pkl is {how_many_days_old(file_path): 0.2f}. Want to load?"
+    ans = yes_or_no(txt)
+
+    if ans:
+        df_opts = get_pickle(file_path)
+        logger.info("Loaded nse nakeds\n")
+        print(df_opts.drop(columns=['nse_symbol', 'instrument', 'contract', 'expiry']).head())
+    else:
+        logger.info("Aborting without loading")
+        sys.exit()
+        return None
+
+    # Check open orders
+    with IB().connect(port=port, clientId=10) as ib:
+        dfo = get_open_orders(ib)
+        dfp = quick_pf(ib)
+
+    if not dfo.empty:
+        remove_opens = set(dfo.symbol.to_list())
+    else:
+        remove_opens = set()
+
+    # make a list of symbols to be removed from df_opts
+    if not dfp.empty:
+        remove_positions = set(dfp.symbol.to_list())
+    else:
+        remove_positions = set()
+
+    remove_ib_syms = remove_opens | remove_positions
+
+    # get the target options to plant
+    dft = df_opts[~df_opts.ib_symbol.isin(remove_ib_syms)].reset_index(drop=True)
+
+    # Arrange and maked orders
+    df_nakeds = arrange_orders(dft, maxmargin=MARGINPERORDER)
+    cos = make_ib_orders(df_nakeds)
+
+    # Place the orders
+    ans_order = yes_or_no(f"Do you want to place {len(dft)} orders?")
+
+    if ans_order:
+        with IB().connect(port=port, clientId=10) as ib:
+            ordered = place_orders(ib=ib, cos=cos)
+
+        # archive orders into xn_history
+        filename = f"{datetime.now().strftime('%Y%m%d_%I_%M_%p')}_nse_naked_orders.pkl"
+        pickle_me(ordered, str(ROOT / "data" / "xn_history" / str(filename)))
+        logger.info(f"Successfully placed {len(ordered)} NSE orders")
+        print(util.df(ordered).head())
+
+    else:
+        logger.info("Aborting NSE order placement as requested")
+        sys.exit()
+        return None
+
+    return util.df(ordered)
 
 
 # *--- SEEKING ---
@@ -746,3 +828,4 @@ def equity_iv_df(quotes: dict) -> pd.DataFrame:
     df = df[df.instrument.isin(["IDXOPT", "STKOPT"])]
 
     return df
+

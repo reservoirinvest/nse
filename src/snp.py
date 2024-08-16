@@ -2,30 +2,28 @@
 # ===============================
 
 import asyncio
-import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
 from from_root import from_root
-from ib_async import IB, Contract, Index, Stock
-from ibfuncs import qualify_me
-from loguru import logger
-from tqdm.asyncio import tqdm
-from utils import chunk_me, clean_ib_util_df, load_config, to_list
+from ib_async import IB, Index, Stock
+from ibfuncs import get_mkt_prices, qualify_me
+from utils import get_pickle, load_config, pickle_me
 
+MARKET = 'SNP'
 ROOT = from_root()
 
-PKL = ROOT / "data" / "zpkl"
+PKL = ROOT / "data" / "snp_unds.pkl"
 
-config = load_config()
+config = load_config(MARKET=MARKET)
 
 # ---- SETTING CONSTANTS ----
 PUTSTDMULT = config.get("PUTSTDMULT")
 CALLSTDMULT = config.get("CALLSTDMULT")
 
-PORT = port = config.get("SNP_LIVE_PORT")
+PORT = port = config.get("PORT")
 
 indexes_path = ROOT / "data" / "templates" / "snp_indexes.yml"
 
@@ -160,46 +158,14 @@ async def assemble_snp_underlyings(port: int) -> dict:
 
 
 if __name__ == "__main__":
-    # und_contracts = asyncio.run(assemble_snp_underlyings(port))
-    # pickle_me(und_contracts, PKL)
 
-    # und_contracts = get_pickle(PKL)
+    und_contracts = asyncio.run(assemble_snp_underlyings(port))
+    pickle_me(und_contracts, PKL)
 
-    # df_und_prices = asyncio.run(get_mkt_prices(port, und_contracts))
+    und_contracts = get_pickle(PKL)
 
-    # pickle_me(df_und_prices, PKL)
-    # print(df_und_prices.head())
+    df_und_prices = asyncio.run(get_mkt_prices(port, und_contracts))
 
-    ib = IB().connect(port=port)
+    pickle_me(df_und_prices, PKL)
+    print(df_und_prices.head())
 
-    watch_dict = {"TSLA": "NYSE", "MSFT": "NYSE", "AAPL": "NYSE"}
-
-    def wait_for_market_data(tickers):
-        """print tickers as they arrive"""
-        print(tickers)
-
-    market_data = {}  # store ticker here
-    contracts = {}  # store contracts here
-
-    # Define stocks
-    for ticker in list(watch_dict.keys()):
-        print(ticker)
-        contracts[ticker] = Stock(ticker, watch_dict[ticker], "USD")
-        print(f"contract:{contracts[ticker]}")
-
-        # Request current prices
-        market_data[ticker] = ib.reqMktData(contracts[ticker], "", False, False)
-
-        # ib.sleep(2)
-        print(market_data[ticker])
-        ib.pendingTickersEvent += wait_for_market_data
-
-    # wait for tickers to fill
-    ib.sleep(2)
-    print(market_data)
-
-    print("wait for pendingTickersEvent to produce data")
-    ib.sleep(3)
-    _ = [ib.cancelMktData(_c) for _c in contracts.values()]
-    print("the end")
-    ib.disconnect()

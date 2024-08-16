@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,13 +13,13 @@ import numpy as np
 import pandas as pd
 from dotenv import find_dotenv, load_dotenv
 from from_root import from_root
-from ib_async import IB, LimitOrder, MarketOrder, Option, Order, util
+from ib_async import IB, Contract, LimitOrder, MarketOrder, Option, Order, util
 from loguru import logger
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
 
-from utils import (arrange_orders, clean_ib_util_df, get_port, handle_raws,
-                   load_config, make_contracts_orders, pickle_me, to_list)
+from utils import (arrange_orders, chunk_me, clean_ib_util_df, get_port, handle_nse_raws,
+                   load_config, make_contracts_orders, pickle_me, split_symbol_price_iv, to_list)
 
 ROOT = from_root()
 dotenv_path = find_dotenv()
@@ -322,72 +323,109 @@ async def marginsAsync(
     return df_mcom
 
 
+# *---- Price and IVs ---
+
+async def get_tick_data(ib: IB, c: Contract, delay: float = 6):
+    """Gets tick-by-tick data
+
+    Args:
+        ib (IB): IB instance
+        c (Contract): a contract
+        delay (float, optional): delay to fill. Defaults to 6 secs.
+
+    Returns:
+        _type_: IB ticker
+    """
+
+    # Request tick-by-tick data for the given contract asynchronously
+    ticker = await ib.reqTickersAsync(c)
+
+    # Introduce an optional delay if specified
+    await asyncio.sleep(delay)
+
+    # Return the retrieved ticker data
+    return ticker
+
+
+async def get_market_data(ib: IB, c: Contract, sleep: float = 2):
+
+    """Gets market price with implied volatility. Works also in closed market.
+
+    Args:
+        ib (IB): IB instance
+        c (Contract): a contract
+        sleep (float, optional): delay to fill. Defaults to 2 secs.
+
+    Returns:
+        _type_: IB tick_
+    """
+
+    tick = ib.reqMktData(c, genericTickList="106")
+    try:
+        await asyncio.sleep(sleep)
+    finally:
+        ib.cancelMktData(c)
+
+    return tick
+
+
+async def get_a_price_iv(ib, contract, sleep: float = 2) -> dict:
+    """[async] Computes price and IV of a contract.
+
+    OUTPUT: dict{localsymbol, price, iv}
+
+    Could take up to 12 seconds in case live prices are not available"""
+
+    mkt_data = await get_market_data(ib, contract, sleep)
+    undPrice = mkt_data.marketPrice()
+
+    if math.isnan(undPrice):
+        undPrice = mkt_data.close
+        if math.isnan(undPrice):
+            tick_data = await get_tick_data(ib, contract)
+            tick_data_price = tick_data[0].marketPrice()
+            undPrice = (
+                tick_data_price
+                if not math.isnan(tick_data_price)
+                else tick_data[0].close
+            )
+            if math.isnan(undPrice):
+                logger.info(f"No price found for {contract.localSymbol}!")
+
+    iv = mkt_data.impliedVolatility
+    return {"localsymbol": contract.localSymbol, "price": undPrice, "iv": iv}
+
+
+async def get_mkt_prices(
+   ib:IB, contracts: list, chunk_size: int = 44, sleep: int = 7
+) -> pd.DataFrame:
+    """[async] A faster way to get market prices."""
+
+    contracts = to_list(contracts)
+    chunks = chunk_me(contracts, chunk_size)
+    results = dict()
+
+    for cts in tqdm(chunks, desc="Mkt prices with IVs"):
+        tasks = [get_a_price_iv(ib, c, sleep) for c in cts]
+        res = await asyncio.gather(*tasks)
+
+        for r in res:
+            symbol, price, iv = r.values()
+            results[symbol] = (price, iv)
+
+    df_prices = split_symbol_price_iv(results)
+    df_prices = pd.merge(
+        clean_ib_util_df(contracts), df_prices, on="symbol"
+    )
+
+    return df_prices
+
 # * --- ORDER HANDLING ---
 
-def order_nakeds(
-    df_opts: pd.DataFrame,
-    MARKET: str,
-    PORT: str = "PORT",
-    how_many: int = 2,
-    puts_only: bool = False,
-) -> list:
-    """Order nakeds
-    Args:
-       df_opts: df of option orders to be placed
-       port: IB port for ordering"""
+def order_nakeds():
+    """ # !!! To be made from _order_nse.ipynb!!!"""
+    pass
 
-    config = load_config(MARKET)
-
-    port = config.get(PORT)
-    MARGINPERORDER = config.get("MARGINPERORDER")
-
-    # Check raw foder for remnants and process
-    handle_raws()
-
-    # Check open orders and make removal list
-    with IB().connect(port=port, clientId=10) as ib:
-        dfo = get_open_orders(ib)
-        dfp = quick_pf(ib)
-
-    if not dfo.empty:
-        remove_opens = set(dfo.symbol.to_list())
-    else:
-        remove_opens = set()
-
-    # make a list of symbols to be removed from df_opts
-
-    if not dfp.empty:
-        remove_positions = set(dfp.symbol.to_list())
-    else:
-        remove_positions = set()
-
-    remove_ib_syms = remove_opens | remove_positions
-
-    # get the target options to plant
-    dft = df_opts[~df_opts.ib_symbol.isin(remove_ib_syms)].reset_index(drop=True)
-
-    df_nakeds = arrange_orders(
-        dft, maxmargin=MARGINPERORDER, how_many=how_many, puts_only=puts_only
-    )
-    cos = make_ib_orders(df_nakeds)
-
-    # place the orders
-    if cos:
-        with IB().connect(port=port, clientId=10) as ib:
-            ordered = place_orders(ib=ib, cos=cos)
-        pass
-    else:
-        logger.info("Nothing to order!")
-        ordered = []
-
-    # timestamp and archive the orders
-    if ordered:
-        filename = f"{datetime.now().strftime('%Y%m%d_%I_%M_%p')}_naked_orders.pkl"
-        pickle_me(ordered, str(ROOT / "data" / "xn_history" / str(filename)))
-
-        logger.info(f"Successfully placed {len(ordered)} orders")
-
-    return ordered
 
 def make_ib_orders(df: pd.DataFrame) -> tuple:
     """Make (contract, order) tuples"""

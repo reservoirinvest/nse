@@ -5,7 +5,7 @@ import pandas as pd
 from ib_async import IB
 from loguru import logger
 from ibfuncs import get_open_orders, quick_pf
-from nse import get_fnos, make_earliest_nse_nakeds
+from nse import get_fnos, make_earliest_nse_nakeds, order_nse_nakeds
 from utils import clean_symbols, pretty_print_df
 
 
@@ -111,7 +111,12 @@ def market_selection():
         return market_selection()
 
 @click.command()
-@click.option('--function', '-f', type=click.Choice(['nse_nakeds', 'get_orders', 'get_portfolio'], case_sensitive=False), required=True, help='Function to execute.')
+@click.option('--function', '-f',
+              type=click.Choice(['get_orders', 'get_portfolio',
+                                    'nse_nakeds', 'nse_order_place'],
+                                        case_sensitive=False),
+                                        required=True,
+                                        help='Function to execute.')
 @click.option('--save', is_flag=True, default=True, help='Pickles to `data/raw` if set (only for nse_nakeds).')
 @click.option('--fnos', type=str, multiple=True, help='FNOs as a list of strings or a single string. Use comma to separate multiple values (only for nse_nakeds).')
 @click.option('--port', type=int, help='Port number for IB connection (required for get_orders and get_portfolio).')
@@ -120,15 +125,21 @@ def market_selection():
 @click.option('--symbols', type=str, multiple=True, help='Symbols to filter orders (only for get_orders).')
 def cli(function, save, fnos, port, clientid, active, symbols):
     """Command line interface for IBKR option functions."""
+
     if function == 'nse_nakeds':
         # Convert fnos to a list if it is provided
         fnos_list = list(fnos) if fnos else None
         nse_nakeds(save, fnos_list)
+
+    elif function == 'nse_order_place':
+        order_nse_nakeds()
+
     elif function == 'get_orders':
         if port is None:
             raise click.BadParameter('Port is required for get_orders.')
         symbols_list = list(symbols) if symbols else None
         get_orders(symbols_list, active, port, clientid)
+
     elif function == 'get_portfolio':
         if port is None:
             raise click.BadParameter('Port is required for get_portfolio.')

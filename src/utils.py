@@ -212,16 +212,16 @@ def get_pickle_suffix(pattern: str = "*nakeds*"):
     return max(suffixes) + 1 if suffixes else 1
 
 
-def remove_raw_nakeds(pattern: str, save: bool = True):
+def remove_nse_raw_nakeds(pattern: str, save: bool = True):
     # consolidate and pickle
-    files = get_files_from_patterns(pattern="*nakeds*")
+    files = get_files_from_patterns(pattern=pattern)
 
     if files:
         df_nakeds = pd.concat([get_pickle(f) for f in files], ignore_index=True)
 
         # save a df_nakeds for rough use
         if save:
-            pickle_me(df_nakeds, ROOT / "data" / "df_nakeds.pkl")
+            pickle_me(df_nakeds, ROOT / "data" / "nse_nakeds.pkl")
 
             # historize
             filename = f"{datetime.now().strftime('%Y%m%d_%I_%M_%p')}_naked_orders.pkl"
@@ -301,7 +301,7 @@ def pickle_with_age_check(
         )
 
 
-def handle_raws(pattern: str = ""):
+def handle_nse_raws(pattern: str = ""):
     """Removes raw nakeds
 
     Args:
@@ -312,7 +312,7 @@ def handle_raws(pattern: str = ""):
         ans = yes_or_no("Do you want to archive raw nakeds?")
 
         if ans:
-            remove_raw_nakeds(pattern=pattern, save=True)
+            remove_nse_raw_nakeds(pattern=pattern, save=True)
 
     else:
         print("No raw files to archive")

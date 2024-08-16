@@ -7,23 +7,7 @@ dependencies = [
     "load-dotenv>=0.1.0",
     "click>=8.1.7",
     "jupyterlab-git>=0.50.1",
-    "ib-insync>=0.9.86",
     "ib-async>=1.0.3",
-]
-requires-python = "==3.11.*"
-readme = "README.md"
-license = { text = "MIT" }
-
-
-[tool.pdm]
-distribution = false
-
-[tool.ruff]
-select = ["E", "F", "W"]
-ignore = ["E501"]
-
-[tool.pdm.dev-dependencies]
-dev = [
     "pandas>=2.2.2",
     "requests>=2.32.3",
     "tqdm>=4.66.4",
@@ -46,3 +30,15 @@ dev = [
     "lxml>=5.2.2",
     "ruff>=0.5.7",
 ]
+requires-python = "==3.11.*"
+readme = "README.md"
+license = { text = "MIT" }
+
+
+[tool.pdm]
+distribution = false
+
+[tool.ruff]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+

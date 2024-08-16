@@ -10,17 +10,14 @@
 
 
 # To-do
-
-- [ ] Make `get_price_iv()` asynchronously
-- [ ] _order.ipynb. update ibfuncs.py with `place_nakeds()` function, to cater to both snp and nse.
+- [ ] Build nakeds for snp.
 
 ## For SNP
-- [ ] Make `naked_orders()` for `snp.py` with:
-
-   - [ ] qualified symbols with underlyings
+- [ ] Make `snp_nakeds()` for `snp.py` with:
    - [ ] `chains()` for `df_all` options, limited to `dte` range
-   - [ ] `targets()`
-
+   - [ ] `earliest_margins()` from `df_all()` and store with date for reference
+   - [ ] `targets()` with appropriate standard deviation safe_strike and xPrice
+   - [ ] `order_snp_nakeds()`
 
 - [ ] Option to pick up margins from offline
 - [ ] Extend to expiries beyond earliest for `nse`
@@ -28,7 +25,6 @@
 ## General utilities
 - [ ] modify an order - from df_nakeds
 - [ ] cancel an order function from df_nakeds if it is ACTIVE
-- [ ] mass order delete function
 
 <br/>
 
