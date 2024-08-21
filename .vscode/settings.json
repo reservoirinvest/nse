@@ -1,26 +1,26 @@
 {
-    "peacock.color": "gray",
+    "peacock.color": "#cbcb55",
     "workbench.colorCustomizations": {
-        "activityBar.activeBackground": "#999999",
-        "activityBar.background": "#999999",
+        "activityBar.activeBackground": "#d7d77c",
+        "activityBar.background": "#d7d77c",
         "activityBar.foreground": "#15202b",
         "activityBar.inactiveForeground": "#15202b99",
-        "activityBarBadge.background": "#5858c7",
+        "activityBarBadge.background": "#2d9393",
         "activityBarBadge.foreground": "#e7e7e7",
         "commandCenter.border": "#15202b99",
-        "sash.hoverBorder": "#999999",
-        "statusBar.background": "#808080",
+        "sash.hoverBorder": "#d7d77c",
+        "statusBar.background": "#cbcb55",
         "statusBar.foreground": "#15202b",
-        "statusBarItem.hoverBackground": "#666666",
-        "statusBarItem.remoteBackground": "#808080",
+        "statusBarItem.hoverBackground": "#b5b538",
+        "statusBarItem.remoteBackground": "#cbcb55",
         "statusBarItem.remoteForeground": "#15202b",
-        "titleBar.activeBackground": "#808080",
+        "titleBar.activeBackground": "#cbcb55",
         "titleBar.activeForeground": "#15202b",
-        "titleBar.inactiveBackground": "#80808099",
+        "titleBar.inactiveBackground": "#cbcb5599",
         "titleBar.inactiveForeground": "#15202b99"
     },
+    "editor.autoIndent": "advanced",
     "jupyter.notebookFileRoot": "${workspaceFolder}",
-    {
         // Enable Python linting
         "python.linting.enabled": true,
     
@@ -47,6 +47,4 @@
         "ruff.nativeServer": "on",
         "debug.allowBreakpointsEverywhere": true,
         "jupyter.askForKernelRestart": false
-    }
-    
 }

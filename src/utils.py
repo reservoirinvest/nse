@@ -5,7 +5,7 @@ import math
 import os
 import pickle
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Union
 
@@ -318,7 +318,7 @@ def handle_nse_raws(pattern: str = ""):
         print("No raw files to archive")
 
 
-# *--- TRANSFORMATIONS ---
+# *--- TRANSFORMING ---
 
 
 def to_list(data):
@@ -385,8 +385,10 @@ def chunk_me(data, size: int = 25) -> list:
 
 
 def clean_ib_util_df(
-    contracts: Union[list, pd.Series], eod=True, ist=True
-) -> Union[pd.DataFrame, None]:
+    contracts: Union[list, pd.Series],
+    eod=True,
+    ist=True
+    ) -> Union[pd.DataFrame, None]:
     """Cleans ib_async's util.df to keep only relevant columns"""
 
     # Ensure contracts is a list
@@ -420,7 +422,8 @@ def clean_ib_util_df(
             "right",
         ]
     ]
-    udf.rename(columns={"lastTradeDateOrContractMonth": "expiry"}, inplace=True)
+    udf.rename(columns={"lastTradeDateOrContractMonth": "expiry",
+                        "symbol": "ib_symbol"}, inplace=True)
 
     # Convert expiry to UTC datetime, if it exists
     if len(udf.expiry.iloc[0]) != 0:
@@ -533,7 +536,7 @@ def split_symbol_price_iv(prices_dict: dict) -> pd.DataFrame:
         *((symbol, price, iv) for symbol, (price, iv) in prices_dict.items())
     )
 
-    df_prices = pd.DataFrame({"symbol": symbols, "price": prices, "iv": ivs})
+    df_prices = pd.DataFrame({"ib_symbol": symbols, "price": prices, "iv": ivs})
 
     return df_prices
 
@@ -579,12 +582,19 @@ def get_closest_strike(df, above=None):
     return df.loc[[closest_index]]
 
 
-def get_dte(s: pd.Series) -> pd.Series:
-    """Gets days to expiry. Expects series of UTC timestamps"""
+def get_dte(s: pd.Series | datetime) -> pd.Series | float:
+    """
+    Gets days to expiry. Expects a series of UTC timestamps or a single UTC datetime.
+    If a series is given, returns a series, else it returns a single float.
+    """
+    now_utc = datetime.now(timezone.utc)
 
-    now_utc = datetime.now(pytz.UTC)
-    return (s - now_utc).dt.total_seconds() / (24 * 60 * 60)
-
+    if isinstance(s, pd.Series):
+        return (s - now_utc).dt.total_seconds() / (24 * 60 * 60)
+    elif isinstance(s, datetime):
+        return (s - now_utc).total_seconds() / (24 * 60 * 60)
+    else:
+        raise TypeError("Input must be a pandas Series or a datetime.datetime object")
 
 def get_a_stdev(iv: float, price: float, dte: float) -> float:
     """Gives 1 Standard Deviation value for annual iv"""
@@ -622,21 +632,22 @@ def get_prec(v: float, base: float) -> float:
     return output
 
 
-def get_port(MARKET: str, PAPER: bool=None) -> int:
+def get_port(MARKET: str, LIVE: bool=True) -> int:
     """Gets port no of IB.
 
     Args:
         MARKET (str): SNP | NSE
-        PAPER (bool, optional): True if paper port is needed. Defaults to None.
+        LIVE (bool, optional): True if LIVE port is needed. Defaults to True.
 
     Returns:
         int: _description_
     """
     config = load_config(MARKET=MARKET.upper())
-    if PAPER:
-        port = config.get("PAPER")
+
+    if LIVE is True:
+        port = config.get("PORT")
     else:
-        port = config.get('PORT')
+        port = config.get('PAPER')
 
     return port
 
@@ -710,18 +721,75 @@ def append_cos(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def get_xPrice(df:pd.DataFrame) -> pd.DataFrame:
+    """Gets expected price from safe_strike. 
+    Adds option price to delta of safe_strike and (undPrice or strike).
+
+    Args:
+        df (pd.DataFrame): df with right, strike, safe_strike, undPrice, bsPrice and Price
+
+    Returns:
+        pd.DataFrame: df with xPrice
+    """
+
+    # call xPrice calculations
+
+    c = df.right == 'C'
+
+    c1 = df.undPrice.between(df.strike, df.safe_strike)
+    df1 = df[c&c1]
+    max1 = (df1[['bsPrice', 'price']]).max(axis=1)
+    df1 = df1.assign(xPrice=df1.safe_strike-df1.undPrice+max1)
+
+    c2 = df.strike.between(df.undPrice, df.safe_strike)
+    df2 = df[c&c2]
+    max2 = (df2[['bsPrice', 'price']]).max(axis=1)
+    df2 = df2.assign(xPrice=df2.safe_strike-df2.strike+max2)
+
+    c3 = df.safe_strike.between(df.undPrice, df.strike)
+    df3 = df[c&c3]
+    max3 = (df3[['bsPrice', 'price']]).max(axis=1)
+    df3 = df3.assign(xPrice=max3)
+
+    # put xPrice calculations
+
+    p = df.right == 'P'
+
+    p1 = df.undPrice.between(df.safe_strike, df.strike)
+    df4 = df[p&p1]
+    max4 = (df4[['bsPrice', 'price']]).max(axis=1)
+    df4 = df4.assign(xPrice=df4.strike-df4.safe_strike+max4)
+
+    p2 = df.strike.between(df.safe_strike, df.undPrice)
+    df5 = df[p&p2]
+    max5 = (df5[['bsPrice', 'price']]).max(axis=1)
+    df5 = df5.assign(xPrice=df5.undPrice-df5.safe_strike+max5)
+
+    p3 = df.safe_strike.between(df.strike, df.undPrice)
+    df6 = df[p&p3]
+    max6 = (df6[['bsPrice', 'price']]).max(axis=1)
+
+    df6 = df6.assign(xPrice=max6)
+    df_out = pd.concat([df1, df2, df3, df4, df5, df6])
+
+    return df_out
+
+
 def append_xPrice(df: pd.DataFrame, MINEXPROM: float) -> pd.DataFrame:
     """Append expected price, filter minimum rom and sort by likeliest"""
 
     # remove order column
     df = df.drop(columns=["order"], errors="ignore")
 
-    # get maxprice
-    maxPrice = np.maximum(df.price, df.bsPrice)
+    # # get maxprice
+    # maxPrice = np.maximum(df.price, df.bsPrice)
 
-    # get expected price
-    xPrice = (df.intrinsic + maxPrice).apply(lambda x: max(get_prec(x, 0.05), 0.05))
-    df = df.assign(xPrice=xPrice)
+    # # get expected price
+    # xPrice = (df.intrinsic + maxPrice).apply(lambda x: max(get_prec(x, 0.05), 0.05))
+    # df = df.assign(xPrice=xPrice)
+
+    # get xPrice
+    df = get_xPrice(df)
 
     # prevent divide by zero for rom
     margin = np.where(df.margin <= 0, np.nan, df.margin)
@@ -906,9 +974,21 @@ def split_and_uppercase(s):
         for item in s:
             result.extend(re.split(r"[,\s]+", item))
         return [item.upper() for item in result if item]
-    else:
+
+    elif isinstance(s, list):
+        # If it's a list, process each element
+        result = []
+        for item in s:
+            # Split each item in the list
+            result.extend(re.split(r"[,\s]+", item))
+        return [item.upper() for item in result if item]
+
+    elif isinstance(s, str):
         # If it's a single string, process it directly
         return [item.upper() for item in re.split(r"[,\s]+", s) if item]
+
+    # Return an empty list if the input is neither a list, tuple, set, nor string
+    return []
 
 
 # *--- TEST BENCH ---

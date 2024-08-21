@@ -4,9 +4,9 @@ from typing import Union
 import pandas as pd
 from ib_async import IB
 from loguru import logger
-from ibfuncs import get_open_orders, quick_pf
+from ibfuncs import account_values, get_open_orders, quick_pf
 from nse import get_fnos, make_earliest_nse_nakeds, order_nse_nakeds
-from utils import clean_symbols, pretty_print_df
+from utils import clean_symbols, pretty_print_df, get_port
 
 
 # Ensure the log directory exists
@@ -64,6 +64,21 @@ def get_portfolio(port: int, clientId: int=10) -> pd.DataFrame:
         pretty_print_df(df)
     return df
 
+
+def get_nlv(port: int, clientId: int=10) -> dict:
+    """Gets NLV, cusion and margins
+
+    Args:
+        port (int): IB port
+        clientId (int, optional): Client ID. Defaults to 10.
+
+    Returns:
+        dict: _description_
+    """
+    with IB().connect(port=port, clientId=clientId) as ib:
+        nlv = ib.run(account_values(ib))
+        print(nlv)
+
 def get_orders(symbols: Union[str, list, None],
               active: bool,
               port: int,
@@ -111,19 +126,19 @@ def market_selection():
         return market_selection()
 
 @click.command()
-@click.option('--function', '-f',
-              type=click.Choice(['get_orders', 'get_portfolio',
+@click.option('--function', '--f',
+              type=click.Choice(['get_orders', 'get_portfolio', 'get_nlv',
                                     'nse_nakeds', 'nse_order_place'],
                                         case_sensitive=False),
                                         required=True,
                                         help='Function to execute.')
-@click.option('--save', is_flag=True, default=True, help='Pickles to `data/raw` if set (only for nse_nakeds).')
+@click.option('--save',  is_flag=True, default=True, help='Pickles to `data/raw` if set (only for nse_nakeds).')
 @click.option('--fnos', type=str, multiple=True, help='FNOs as a list of strings or a single string. Use comma to separate multiple values (only for nse_nakeds).')
-@click.option('--port', type=int, help='Port number for IB connection (required for get_orders and get_portfolio).')
+@click.option('--market', '--m', type=click.Choice(['SNP', 'NSE'], case_sensitive=False), help='Choose market for port')
 @click.option('--clientid', type=int, default=10, help='Client ID for IB connection (default is 10).')
 @click.option('--active', is_flag=True, default=False, help='If set, shows only ACTIVE orders (only for get_orders).')
 @click.option('--symbols', type=str, multiple=True, help='Symbols to filter orders (only for get_orders).')
-def cli(function, save, fnos, port, clientid, active, symbols):
+def cli(function, save, fnos, market, clientid, active, symbols):
     """Command line interface for IBKR option functions."""
 
     if function == 'nse_nakeds':
@@ -135,18 +150,24 @@ def cli(function, save, fnos, port, clientid, active, symbols):
         order_nse_nakeds()
 
     elif function == 'get_orders':
-        if port is None:
-            raise click.BadParameter('Port is required for get_orders.')
+        if market is None:
+            market = market_selection()
+        port = get_port(market.upper())
         symbols_list = list(symbols) if symbols else None
         get_orders(symbols_list, active, port, clientid)
 
     elif function == 'get_portfolio':
-        if port is None:
-            raise click.BadParameter('Port is required for get_portfolio.')
+        if market is None:
+            market = market_selection()
+        port = get_port(market.upper())
         get_portfolio(port, clientid)
 
-    # Print or process the result as needed
-    # print(result)
+    elif function == 'get_nlv':
+        if market is None:
+            market = market_selection()
+        port = get_port(market.upper())
+        get_nlv(port=port, clientId=clientid)
+
 
 if __name__ == '__main__':
     cli()

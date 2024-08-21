@@ -374,6 +374,7 @@ def make_earliest_nse_nakeds(
         filename = str(f"nsenakeds{suffix}.pkl")
 
         for symbol in fnos:
+            symbol = symbol.upper()
             pbar.set_description(f"for: {symbol}")
 
             try:

@@ -2,6 +2,7 @@
 # ====================================
 
 import asyncio
+import itertools
 import logging
 import math
 import os
@@ -13,13 +14,12 @@ import numpy as np
 import pandas as pd
 from dotenv import find_dotenv, load_dotenv
 from from_root import from_root
-from ib_async import IB, Contract, LimitOrder, MarketOrder, Option, Order, util
+from ib_async import IB, Contract, LimitOrder, Order, util
 from loguru import logger
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
 
-from utils import (arrange_orders, chunk_me, clean_ib_util_df, get_port, handle_nse_raws,
-                   load_config, make_contracts_orders, pickle_me, split_symbol_price_iv, to_list)
+from utils import (chunk_me, clean_ib_util_df, convert_to_utc_datetime, get_dte, get_port, load_config, pickle_me, split_symbol_price_iv, to_list)
 
 ROOT = from_root()
 dotenv_path = find_dotenv()
@@ -93,71 +93,6 @@ def empty_the_df(df):
     return empty_df
 
 
-# *--- IB BLOCKING FUNCTIONS ---
-
-
-def get_ib_margin(contract: Option, order: MarketOrder, port: int) -> dict:
-    """Gets margin and commission of a contract"""
-
-    with IB().connect(port=port) as ib:
-        if contract.conId == 0:  # qualify raw contracts
-            contract = next(iter(ib.qualifyContracts(contract)))
-        wif = ib.whatIfOrder(contract, order)
-
-    # margin = float(wif.initMarginChange) # initial margin is too high compared to Zerodha, SAMCO
-    margin = float(wif.maintMarginChange)
-    comm = min(
-        float(wif.commission), float(wif.minCommission), float(wif.maxCommission)
-    )
-    if comm > 1e7:
-        comm = np.nan
-
-    return {"contract": contract, "margin": margin, "comm": comm}
-
-
-def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
-    """Qualified Contracts, Margins and Commissions from an options df"""
-
-    symbol = df.ib_symbol.iloc[0]
-    df_cos = make_contracts_orders(df)
-
-    cts = [d if d.conId == 0 else None for d in df_cos.contract]
-    with IB().connect(port=port) as ib:
-        if len(cts) > 40:
-            ib.qualifyContracts(*tqdm(cts, desc=f"Qualifying {symbol} options"))
-        else:
-            ib.qualifyContracts(*cts)
-
-        df_cos.contract = cts
-        ib.disconnect()
-
-    if len(df_cos) > 1:  # use tqdm.pandas.progress_apply()
-        tqdm.pandas(desc=f"Calculating {symbol} margins")
-        data = df_cos.progress_apply(
-            lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1
-        )
-    else:
-        data = df_cos.apply(
-            lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1
-        )
-
-    df_mcom = pd.DataFrame.from_dict(data.to_dict()).T
-
-    # replace raw contracts with qualified
-    df_q = df_cos.join(df_mcom, how="outer", lsuffix="_left").drop(
-        ["contract_left", "order"], axis=1
-    )
-
-    # merge margins and commissions
-    df_opts = df.merge(df_q, left_index=True, right_index=True, suffixes=("_left", ""))
-    df_opts = df_opts.drop(columns="contract_left", errors="ignore")
-
-    # determine the secType for IB
-    df_opts = df_opts.assign(secType=df_opts.contract.apply(lambda s: s.secType))
-
-    return df_opts
-
-
 # *---- QUALIFYING ----
 
 async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"):
@@ -180,19 +115,22 @@ async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"
 
 # *--- SEEKING ---
 
-def get_ib(MARKET:str, cid: int=10) -> IB:
+def get_ib(MARKET: str, cid: int = 10, LIVE: bool = True) -> IB:
     """Gets an active IB port for context managers
 
     Args:
         MARKET (str): NSE | SNP
         cid (int, optional): clientId for IB. Defaults to 10.
+        LIVE (bool, optional): LIVE or PAPER
 
     Returns:
         IB: an active IB connection
     """
+    port = get_port(MARKET=MARKET, LIVE=LIVE)
 
-    port = get_port(MARKET)
-    return IB().connect(port=port, clientId=cid)
+    connection = IB().connect(port=port, clientId=cid)
+
+    return connection
 
 
 def quick_pf(ib: IB) -> Union[None, pd.DataFrame]:
@@ -256,9 +194,110 @@ async def account_values(ib: IB) -> dict:
 
     return sorted_dict
 
+# *--- Option Chains -----
+
+async def get_an_option_chain(ib: IB, contract:Contract, timeout: int=2):
+    """Gets a single option chain for a single contract with timeout
+
+    Args:
+        ib (IB): Live IB connection
+        contract (Contract): an underlying contract
+        timeout (int, optional): Time to generate an option chain. Defaults to 2.
+
+    Returns:
+        named tuple: an option chain
+    """
+    try:
+        chain = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(
+        underlyingSymbol=contract.symbol,
+        futFopExchange="",
+        underlyingSecType=contract.secType,
+        underlyingConId=contract.conId,
+        ), timeout=timeout)
+
+        if chain:
+            chain = chain[-1] if isinstance(chain, list) else chain
+        return chain
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout occurred while getting option chain for {contract.symbol}")
+        return None
+
+async def get_option_chains(ib: IB,
+                            contracts: list,
+                            chunk_size:int=20,
+                            timeout:float=4) -> list:
+    """Gets a list of option chains
+
+    Args:
+        ib (IB): Live IB connection
+        contracts (list): List of contraacts to get option chain for
+        chunk_size (int, optional): chunks of contracts. Defaults to 20.
+        timeout (float, optional): timeout for an option chain. Defaults to 4.
+
+    Returns:
+        list: option chains list
+    """
+    option_chains = []
+    total_contracts = len(contracts)
+
+    with tqdm(total=total_contracts, unit="contract") as pbar:
+
+        for i in range(0, total_contracts, chunk_size):
+            chunk = contracts[i: i+chunk_size]
+            tasks = [get_an_option_chain(ib, contract,timeout) for contract in chunk]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            option_chains.extend([chain for chain in results])
+            # option_chains.extend([chain for chain in results if chain is not None])
+            pbar.update(len(chunk))
+
+    return option_chains
+
+
+def make_chains(df_unds: pd.DataFrame, save: bool=False) -> pd.DataFrame:
+    """Generates chains from df_unds df
+
+    Args:
+        df_unds (pd.DataFrame): for a market
+        save (bool): if true, saves the file to <market>_opts.pkl
+
+    Returns:
+        pd.DataFrame: chains df
+    """
+
+    ROOT = from_root()
+
+    MARKET = 'NSE' if df_unds.contract.iloc[0].exchange=='NSE' else 'SNP'
+    und_contracts = df_unds.contract.to_list()
+
+    with get_ib(MARKET) as ib:
+        chains = ib.run(get_option_chains(ib, und_contracts))
+
+    # Clean the chains
+    df_chains = util.df([c for c in chains if c is not None])
+    df_chains.rename(columns={'underlyingConId': 'undId'}, inplace=True, errors="ignore")
+    dfc = df_chains[['undId', 'expirations', 'strikes']]
+    expirations = dfc.expirations.apply(lambda d: [convert_to_utc_datetime(val) for val in d])
+    dfc.loc[:, 'expirations'] = expirations
+
+    # Create a list of tuples, each containing (undId, expiration, strike)
+    data = []
+    for i, row in dfc.iterrows():
+        data.extend([(int(row['undId']), exp, strike, get_dte(exp), right) for exp, strike, right in itertools.product(row['expirations'], row['strikes'], ['P', 'C'])])
+
+    # Create the new DataFrame
+    df_chains = pd.DataFrame(data, columns=['undId', 'expiry', 'strike', 'dte', 'right'])
+    # df_chains.undId = df_chains.undId.astype(int)
+
+    # Join the expanded dataframe with df_unds
+    dfch = pd.merge(df_unds.drop(columns=['expiry', 'strike', 'right', 'contract']), df_chains, on=['undId'], how='left')
+    dfch = dfch.rename(columns={'price': 'undPrice', 'iv': 'und_iv'}, errors='ignore')
+
+    if save:
+        pickle_me(dfch, ROOT/'data'/str(MARKET.lower()+'_opts.pkl'))
+
+    return dfch
 
 # *---- Margins and commissions -----
-
 
 async def get_one_margin(ib, contract, order, timeout):
     """Get margin with commissions within a time"""
@@ -415,7 +454,7 @@ async def get_mkt_prices(
 
     df_prices = split_symbol_price_iv(results)
     df_prices = pd.merge(
-        clean_ib_util_df(contracts), df_prices, on="symbol"
+        clean_ib_util_df(contracts), df_prices, on="ib_symbol"
     )
 
     return df_prices
@@ -536,7 +575,8 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
         all_trades_df = all_trades_df.assign(order=order)
 
         all_trades_df.rename(
-            {"lastTradeDateOrContractMonth": "expiry"}, axis="columns", inplace=True
+            {"lastTradeDateOrContractMonth": "expiry",
+             "symbol": "ib_symbol"}, axis="columns", inplace=True
         )
 
         trades_cols = df_openords.columns

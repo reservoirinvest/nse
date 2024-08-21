@@ -1,13 +1,15 @@
 # ---- UNNECESSARY CODE NOT CONTRIBUTING ANYTHING----
 
-
+import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 from tqdm import tqdm
+from ib_async import IB, MarketOrder, Option
 
 from nse import NSEfnos, equity_iv_df
+from utils import make_contracts_orders
 
 
 def make_raw_fno_df(fnos) -> pd.DataFrame:
@@ -66,3 +68,66 @@ class RBI:
         rate = self.current_rates().get("Policy Repo Rate")[:-1]
 
         return float(rate)
+
+
+
+def get_ib_margin(contract: Option, order: MarketOrder, port: int) -> dict:
+    """Gets margin and commission of a contract"""
+
+    with IB().connect(port=port) as ib:
+        if contract.conId == 0:  # qualify raw contracts
+            contract = next(iter(ib.qualifyContracts(contract)))
+        wif = ib.whatIfOrder(contract, order)
+
+    # margin = float(wif.initMarginChange) # initial margin is too high compared to Zerodha, SAMCO
+    margin = float(wif.maintMarginChange)
+    comm = min(
+        float(wif.commission), float(wif.minCommission), float(wif.maxCommission)
+    )
+    if comm > 1e7:
+        comm = np.nan
+
+    return {"contract": contract, "margin": margin, "comm": comm}
+
+
+def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
+    """Qualified Contracts, Margins and Commissions from an options df"""
+
+    symbol = df.ib_symbol.iloc[0]
+    df_cos = make_contracts_orders(df)
+
+    cts = [d if d.conId == 0 else None for d in df_cos.contract]
+    with IB().connect(port=port) as ib:
+        if len(cts) > 40:
+            ib.qualifyContracts(*tqdm(cts, desc=f"Qualifying {symbol} options"))
+        else:
+            ib.qualifyContracts(*cts)
+
+        df_cos.contract = cts
+        ib.disconnect()
+
+    if len(df_cos) > 1:  # use tqdm.pandas.progress_apply()
+        tqdm.pandas(desc=f"Calculating {symbol} margins")
+        data = df_cos.progress_apply(
+            lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1
+        )
+    else:
+        data = df_cos.apply(
+            lambda row: get_ib_margin(row.contract, row.order, port=port), axis=1
+        )
+
+    df_mcom = pd.DataFrame.from_dict(data.to_dict()).T
+
+    # replace raw contracts with qualified
+    df_q = df_cos.join(df_mcom, how="outer", lsuffix="_left").drop(
+        ["contract_left", "order"], axis=1
+    )
+
+    # merge margins and commissions
+    df_opts = df.merge(df_q, left_index=True, right_index=True, suffixes=("_left", ""))
+    df_opts = df_opts.drop(columns="contract_left", errors="ignore")
+
+    # determine the secType for IB
+    df_opts = df_opts.assign(secType=df_opts.contract.apply(lambda s: s.secType))
+
+    return df_opts

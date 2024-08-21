@@ -14,8 +14,7 @@
 
 ## For SNP
 - [ ] Make `snp_nakeds()` for `snp.py` with:
-   - [ ] `chains()` for `df_all` options, limited to `dte` range
-   - [ ] `earliest_margins()` from `df_all()` and store with date for reference
+   - [ ] get earliest margins for `snp_unds` from the chains. Integrate it in make_chains()
    - [ ] `targets()` with appropriate standard deviation safe_strike and xPrice
    - [ ] `order_snp_nakeds()`
 
@@ -32,6 +31,7 @@
 - [ ] Delta history function to generate and save
 - [ ] Dataclass templates for df_opts (nakeds/targets), df_portfolio and df_orders
 - [ ] Self-sufficient continuous-monitoring and autonomous option bots
+- [ ] Integration to TradingView graph
 
 ---
 
