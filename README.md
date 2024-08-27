@@ -5,15 +5,26 @@
 3. Fully independent of IBKR, with ability to hook to IBKR when needed
 4. Class (OOP) based with stock and option bots
 
-## Left at
-- `/test/snp_naked.ipynb` - trying to get market price with IV.
-
+## Making now...
+* tqdm for marginsAsync() with chunk_me
 
 # To-do
-- [ ] Build nakeds for snp.
+- [ ] Build target options for snp.
 
 ## For SNP
-- [ ] Make `snp_nakeds()` for `snp.py` with:
+- [ ] For target opts `snp_nakeds()` for `snp.py` with:
+   - [x] Make `unds` with `iv` and `price`
+   - [x] Make `chains` from the unds
+   - [x] Get `targets` with the closest `strikes` PUTS with `undPrice` for each dte
+   - [x] Make `safe_strike` of the chains with STDMULTs for the closest
+   - [x] Get the option price from Black Scholes
+   - [ ] Rectify `process_in_chunks()` to identify errors for mass processing (like qualify_me)
+   - [ ] Get the market option price
+   - [ ] Make the xPrice with
+       - * safe_strike - undPrice + strike + Black Scholes for Calls
+       - * undPrice - safe_strike + strike + Black Scholes for Puts
+   - [ ] Get the margins and commissions for the targets
+       - * for those with zero margins compute margins at 20% of stock price
    - [ ] get earliest margins for `snp_unds` from the chains. Integrate it in make_chains()
    - [ ] `targets()` with appropriate standard deviation safe_strike and xPrice
    - [ ] `order_snp_nakeds()`

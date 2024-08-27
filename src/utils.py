@@ -7,7 +7,7 @@ import pickle
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -23,14 +23,7 @@ from scipy.stats import norm
 from tabulate import tabulate
 
 ROOT = from_root()
-
-# Ensure the log directory exists
-log_dir = './log'
-os.makedirs(log_dir, exist_ok=True)
-
-# Configure logger to log to a file named after the script
-logger.add(f"{log_dir}/utils.log", rotation="1 MB")
-
+logger.add(str(ROOT/'log'/'utils.log'))
 
 class Timer:
     """Timer providing elapsed time"""
@@ -155,6 +148,27 @@ def yes_or_no(question: str, default="n") -> bool:
             print("Please answer yes or no.")
 
 
+# *--- CHECKING ---
+
+def catch(func, handle=lambda e : e, *args, **kwargs) -> Callable|None:
+    """Catches error. Useful for list comprehension.
+
+    Usage: [catch(lambda : 1/egg) for egg in (1,2,0,3)]
+
+    Args:
+        func (_type_): _description_
+        handle (_type_, optional): _description_. Defaults to lambdae:e.
+
+    Returns:
+        Callable|None: _description_
+    """
+
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        logger.error(f"{func} gave error: {e}")
+        return None
+
 # *--- FILE HANDLING ---
 
 
@@ -196,6 +210,24 @@ def delete_files(file_paths: Path):
                 logger.info(f"File not found: {file_path}")
         except OSError as e:
             logger.error(f"Error deleting file: {file_path}, {e}")
+
+
+def overwrite_logs(files: Union[Path|None] = None):
+    """Overwrites log files
+
+    Args:
+        files (Union[Path | None], optional): Specific log paths to delete. Defaults to None.
+    """
+
+    if not files:
+        logpath = ROOT/'log'
+        files = get_files_from_patterns(logpath, '*.log')
+    elif isinstance(files, Path):
+        files =[files]
+
+    for file_path in files:
+        with open(file_path, "w"):
+            pass
 
 
 def get_pickle_suffix(pattern: str = "*nakeds*"):
@@ -448,8 +480,10 @@ def convert_to_utc_datetime(date_string, eod=False, ist=True):
 
     try:
         dt = parser.parse(date_string)
-    except ValueError:
-        raise ValueError("Invalid date string format")
+    except ValueError as e:
+        # raise ValueError("Invalid date string format")
+        logger.error(f"Invalid date string format {e}")
+        return np.nan
 
     if eod:
         if ist:
@@ -532,11 +566,11 @@ def split_symbol_price_iv(prices_dict: dict) -> pd.DataFrame:
     """Splits symbol, prices and ivs into a df.
     To be used after get_mkt_prices()"""
 
-    symbols, prices, ivs = zip(
-        *((symbol, price, iv) for symbol, (price, iv) in prices_dict.items())
+    symbols, prices, ivs, hvs = zip(
+        *((symbol, price, iv, hv) for symbol, (price, iv, hv) in prices_dict.items())
     )
 
-    df_prices = pd.DataFrame({"ib_symbol": symbols, "price": prices, "iv": ivs})
+    df_prices = pd.DataFrame({"ib_symbol": symbols, "price": prices, "iv": ivs, "hv": hvs})
 
     return df_prices
 
@@ -582,15 +616,20 @@ def get_closest_strike(df, above=None):
     return df.loc[[closest_index]]
 
 
-def get_dte(s: pd.Series | datetime) -> pd.Series | float:
+def get_dte(s: Union[pd.Series, datetime]) -> Union[pd.Series, float]:
     """
     Gets days to expiry. Expects a series of UTC timestamps or a single UTC datetime.
     If a series is given, returns a series, else it returns a single float.
+
+    Returns np.nan for errors encountered while processing elements in the Series.
     """
     now_utc = datetime.now(timezone.utc)
 
     if isinstance(s, pd.Series):
-        return (s - now_utc).dt.total_seconds() / (24 * 60 * 60)
+        try:
+            return (s - now_utc).dt.total_seconds() / (24 * 60 * 60)
+        except (TypeError, ValueError):  # Catch potential errors during calculation
+            return pd.Series([np.nan] * len(s))  # Return Series with nans
     elif isinstance(s, datetime):
         return (s - now_utc).total_seconds() / (24 * 60 * 60)
     else:

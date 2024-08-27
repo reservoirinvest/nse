@@ -5,7 +5,7 @@
 groups = ["default"]
 strategy = ["cross_platform", "inherit_metadata"]
 lock_version = "4.4.1"
-content_hash = "sha256:d7e2fcb91c87c9761539a84ac4aa4b772862cedf6436bda20defff96e463b8c5"
+content_hash = "sha256:733a21d9f1c5d4108a572464b50265446926d7aeafd5e0a6f34c22eb6ce91983"
 
 [[package]]
 name = "anyio"
@@ -976,6 +976,21 @@ files = [
 ]
 
 [[package]]
+name = "jupyterlab-lsp"
+version = "5.1.0"
+requires_python = ">=3.8"
+summary = "Coding assistance for JupyterLab with Language Server Protocol"
+groups = ["default"]
+dependencies = [
+    "jupyter-lsp>=2.0.0",
+    "jupyterlab<5.0.0a0,>=4.1.0",
+]
+files = [
+    {file = "jupyterlab-lsp-5.1.0.tar.gz", hash = "sha256:aeac84093ada6d20ef57ae0e97811cc5796a0cab7237b32f8eddf993c0bb0356"},
+    {file = "jupyterlab_lsp-5.1.0-py3-none-any.whl", hash = "sha256:290f473b001c7ebe1edfe391a545f50bc4aefe89d4a64db4f17e8de301db3a37"},
+]
+
+[[package]]
 name = "jupyterlab-pygments"
 version = "0.3.0"
 requires_python = ">=3.8"
@@ -1403,6 +1418,22 @@ files = [
     {file = "pandas-2.2.2-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:0cace394b6ea70c01ca1595f839cf193df35d1575986e484ad35c4aeae7266c1"},
     {file = "pandas-2.2.2-cp311-cp311-win_amd64.whl", hash = "sha256:873d13d177501a28b2756375d59816c365e42ed8417b41665f346289adc68d24"},
     {file = "pandas-2.2.2.tar.gz", hash = "sha256:9e79019aba43cb4fda9e4d983f8e88ca0373adbb697ae9c6c43093218de28b54"},
+]
+
+[[package]]
+name = "pandas-datareader"
+version = "0.10.0"
+requires_python = ">=3.6"
+summary = "Data readers extracted from the pandas codebase,should be compatible with recent pandas versions"
+groups = ["default"]
+dependencies = [
+    "lxml",
+    "pandas>=0.23",
+    "requests>=2.19.0",
+]
+files = [
+    {file = "pandas-datareader-0.10.0.tar.gz", hash = "sha256:9fc3c63d39bc0c10c2683f1c6d503ff625020383e38f6cbe14134826b454d5a6"},
+    {file = "pandas_datareader-0.10.0-py3-none-any.whl", hash = "sha256:0b95ff3635bc3ee1a6073521b557ab0e3c39d219f4a3b720b6b0bc6e8cdb4bb7"},
 ]
 
 [[package]]

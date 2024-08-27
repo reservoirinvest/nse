@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from dotenv import find_dotenv, load_dotenv
 from from_root import from_root
-from ib_async import IB, Contract, LimitOrder, Order, util
+from ib_async import IB, Contract, LimitOrder, MarketOrder, Option, Order, Stock, util
 from loguru import logger
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
@@ -95,14 +95,14 @@ def empty_the_df(df):
 
 # *---- QUALIFYING ----
 
-async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"):
+async def qualify_me(ib: IB, data: list, desc: str = "Qualifying contracts"):
     """[async] Qualify contracts asynchronously"""
 
-    contracts = to_list(contracts)  # to take care of single contract
+    data = to_list(data)  # to take care of single contract
 
     tasks = [
         asyncio.create_task(ib.qualifyContractsAsync(c), name=c.localSymbol)
-        for c in contracts
+        for c in data
     ]
 
     await tqdm_asyncio.gather(*tasks, desc=desc)
@@ -110,7 +110,6 @@ async def qualify_me(ib: IB, contracts: list, desc: str = "Qualifying contracts"
     result = [r for t in tasks for r in t.result()]
 
     return result
-
 
 
 # *--- SEEKING ---
@@ -194,6 +193,99 @@ async def account_values(ib: IB) -> dict:
 
     return sorted_dict
 
+def get_nlv(MARKET: str, save: bool=True) -> dict:
+    """Gets net liquidation value, pnl, cash and cushion
+
+    Args:
+        MARKET (str): SNP | NSE
+        save (bool, optional): pickles the dict. Defaults to True.
+
+    Returns:
+        dict: of cash, cushion, margins and pnl
+    """
+
+    with get_ib(MARKET) as ib:
+        nlv = ib.run(account_values(ib))
+
+
+    if save:
+        ROOT = from_root()
+        pickle_me(nlv, ROOT/'data'/str(MARKET.lower()+'_nlv.pkl'))
+
+    return nlv
+
+
+def get_pf_margins(MARKET: str, save:bool=True) -> pd.DataFrame:
+    """Generates portfolios with margins and volatilities
+
+    Args:
+        MARKET (str): SNP | NSE
+        save (bool, optional): pickles if true. Defaults to True.
+
+    Returns:
+        pd.DataFrame: portfolio with und price, iv and hv
+    """
+
+    with get_ib(MARKET) as ib:
+
+        df_pf = quick_pf(ib)
+
+        # prepare the wif orders
+        df_pf = df_pf.assign(action=df_pf.position.apply(lambda x:
+                                            'BUY' if x < 0
+                                            else('SELL' if x > 0 else None)))
+
+        df_pfm = df_pf.assign(order=[MarketOrder(action, qty)
+                            for action, qty
+                            in zip(df_pf.action, df_pf.position.abs())])
+
+        pfc = [Contract(conId=c) for c in df_pf.conId]
+        pfc = ib.run(qualify_me(ib, pfc, desc='Qualifying portfolios'))
+        df_pfm = df_pfm.assign(contract=pfc)
+
+        df_mcom = ib.run(marginsAsync(ib=ib, df=df_pfm, timeout=5))
+        df_mcom.comm = 20 if MARKET == 'NSE' else df_mcom.comm
+        dfm = df_pfm.drop(columns=['order', 'action']).join(df_mcom.drop(columns='contract'))
+        dfm.rename(columns={'symbol': 'ib_symbol'}, inplace=True, errors='ignore')
+
+        # ... get exchange and currency from a contract
+        c = pfc[0]
+
+        if any(e =='' for e in {c.exchange for c in pfc}):
+            exchange = c.primaryExchange
+        else:
+            exchange = c.exchange
+
+        currency = c.currency
+
+        # ... get market prices for underlyings
+        symbols = set(c.symbol for c in pfc)
+
+        unds =[Stock(s, exchange, currency) for s in symbols]
+        unds = ib.run(qualify_me(ib, unds, desc="Qualifying underlyings"))
+
+        dfmp = ib.run(get_mkt_prices(ib, unds))
+
+    # ... integrate df_unds
+    df_unds = dfmp[['ib_symbol', 'price', 'iv', 'hv']].rename(columns={'price': 'undPrice', 'iv': 'und_iv', 'hv': 'und_hv'})
+    dfu = dfm.set_index('ib_symbol').join(df_unds.set_index('ib_symbol')).reset_index().drop(columns=[c for c in dfm.columns])
+
+    insert_pos = 5
+    df = pd.concat([dfm.iloc[:, :insert_pos], dfu, dfm.iloc[:, insert_pos:]], axis=1)
+
+    df = df.assign(
+    expiry=df.expiry.apply(lambda x:
+                           convert_to_utc_datetime(x, eod=True)))
+
+    df.insert(4, 'dte', get_dte(df.expiry))
+
+    if save:
+        ROOT = from_root()
+        pickle_me(df, ROOT/'data'/str(MARKET.lower()+'_pf.pkl'))
+
+    return df
+
+
 # *--- Option Chains -----
 
 async def get_an_option_chain(ib: IB, contract:Contract, timeout: int=2):
@@ -244,39 +336,40 @@ async def get_option_chains(ib: IB,
 
         for i in range(0, total_contracts, chunk_size):
             chunk = contracts[i: i+chunk_size]
-            tasks = [get_an_option_chain(ib, contract,timeout) for contract in chunk]
+            tasks = [get_an_option_chain(ib, contract, timeout) for contract in chunk]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             option_chains.extend([chain for chain in results])
-            # option_chains.extend([chain for chain in results if chain is not None])
             pbar.update(len(chunk))
 
     return option_chains
 
-
-def make_chains(df_unds: pd.DataFrame, save: bool=False) -> pd.DataFrame:
-    """Generates chains from df_unds df
+def make_chains(df_unds: pd.DataFrame,
+                timeout: float=15,
+                chunks: int=15,
+                save: bool=False,
+                ) -> pd.DataFrame:
+    """_summary_
 
     Args:
-        df_unds (pd.DataFrame): for a market
-        save (bool): if true, saves the file to <market>_opts.pkl
+        df_unds (pd.DataFrame): underlying df for a market
+        timeout (float, optional): time to fill. Defaults to 15.
+        chunks (int, optional): chunk size to process. Defaults to 15.
+        save (bool, optional): to pickle. Defaults to False.
 
     Returns:
-        pd.DataFrame: chains df
+        pd.DataFrame: _description_
     """
-
-    ROOT = from_root()
-
     MARKET = 'NSE' if df_unds.contract.iloc[0].exchange=='NSE' else 'SNP'
     und_contracts = df_unds.contract.to_list()
 
     with get_ib(MARKET) as ib:
-        chains = ib.run(get_option_chains(ib, und_contracts))
+        chains = ib.run(get_option_chains(ib, und_contracts, timeout=timeout, chunk_size=chunks))
 
     # Clean the chains
     df_chains = util.df([c for c in chains if c is not None])
     df_chains.rename(columns={'underlyingConId': 'undId'}, inplace=True, errors="ignore")
     dfc = df_chains[['undId', 'expirations', 'strikes']]
-    expirations = dfc.expirations.apply(lambda d: [convert_to_utc_datetime(val) for val in d])
+    expirations = dfc.expirations.apply(lambda d: [convert_to_utc_datetime(val, eod=True) for val in d])
     dfc.loc[:, 'expirations'] = expirations
 
     # Create a list of tuples, each containing (undId, expiration, strike)
@@ -286,28 +379,39 @@ def make_chains(df_unds: pd.DataFrame, save: bool=False) -> pd.DataFrame:
 
     # Create the new DataFrame
     df_chains = pd.DataFrame(data, columns=['undId', 'expiry', 'strike', 'dte', 'right'])
-    # df_chains.undId = df_chains.undId.astype(int)
+    df_chains = df_chains[df_chains.dte > 0] # remove negative dte chains
 
     # Join the expanded dataframe with df_unds
     dfch = pd.merge(df_unds.drop(columns=['expiry', 'strike', 'right', 'contract']), df_chains, on=['undId'], how='left')
-    dfch = dfch.rename(columns={'price': 'undPrice', 'iv': 'und_iv'}, errors='ignore')
+    dfch = dfch.rename(columns={'price': 'undPrice', 'iv': 'und_iv', 'hv': 'und_hv'}, errors='ignore')
 
     if save:
+        ROOT = from_root()
         pickle_me(dfch, ROOT/'data'/str(MARKET.lower()+'_opts.pkl'))
 
     return dfch
 
 # *---- Margins and commissions -----
 
-async def get_one_margin(ib, contract, order, timeout):
-    """Get margin with commissions within a time"""
+async def get_one_margin(ib: IB, data: Contract|Option|Stock, order, timeout: int=7) -> dict|None:
+    """Get margin with commissions within a time
+
+    Args:
+        ib (IB): instance of IB class
+        data (Contract | Option | Stock): a qualified contract
+        order: an order
+        timeout (int): delay. Defaults to 7.
+
+    Returns:
+        dict|None: _description_
+    """
 
     try:
         wif = await asyncio.wait_for(
-            ib.whatIfOrderAsync(contract, order), timeout=timeout
+            ib.whatIfOrderAsync(data, order), timeout=timeout
         )
     except asyncio.TimeoutError:
-        logger.error(f"{contract.localSymbol} wif timed out!")
+        logger.error(f"{data.localSymbol} wif timed out!")
         wif = None
     return wif
 
@@ -327,16 +431,21 @@ def margin_comm(r) -> dict:
 
 
 async def marginsAsync(
-    ib: IB, df: pd.DataFrame, timeout: float = 2, eod: bool = True, ist: bool = True
-) -> pd.DataFrame:
+    ib: IB, df: pd.DataFrame,
+    timeout: float = 2,
+    ) -> pd.DataFrame:
     """Gets async contracts from a df
-    Args:
-      df: dataframe with `contract` and `order` columns
-      port: ib port
-      timeout: time to wait. ~2 seconds for 10 rows
-    Returns:
-      a Dataframe with same index as input"""
 
+    Args:
+        ib (IB): An active IB connection
+        df (pd.DataFrame): df with `contract` and `order` fields
+        timeout (float, optional): time delay to get a margin. Defaults to 2.
+        eod (bool, optional): gets end of day time for options. Defaults to True.
+        ist (bool, optional): gets Indian Std Time for NSE options. Defaults to True.
+
+    Returns:
+        pd.DataFrame: df with ib_symbol, margin and comm
+    """
     try:
         contracts = df.contract.to_list()
         orders = df.order.to_list()
@@ -364,6 +473,42 @@ async def marginsAsync(
 
 # *---- Price and IVs ---
 
+async def get_mkt_prices(ib:IB, data: list,
+                         chunk_size: int = 44, sleep: int = 7,
+                         gentick:str='106, 104') -> pd.DataFrame:
+    """Gets market prices with iv and hv.
+
+    Args:
+        ib (IB): Live IB connection
+        contracts (list): list of IB contracts
+        chunk_size (int, optional): block size for processing. Defaults to 44.
+        sleep (int, optional): delay to fill. Defaults to 7.
+        gentick (str, optional): iv:106 | hv:104. Defaults to '106, 104'.
+
+    Returns:
+        pd.DataFrame: _description_
+    """
+
+    data = to_list(data)
+    chunks = chunk_me(data, chunk_size)
+    results = dict()
+
+    for cts in tqdm(chunks, desc="Mkt prices with IVs"):
+        tasks = [get_a_price_iv(ib, c, sleep, gentick) for c in cts]
+        res = await asyncio.gather(*tasks)
+
+
+        for r in res:
+            symbol, price, iv, hv = r.values()
+            results[symbol] = (price, iv, hv)
+
+    df_prices = split_symbol_price_iv(results)
+
+    dfp = clean_ib_util_df(data).join(df_prices.drop(columns='ib_symbol'))
+
+    return dfp
+
+
 async def get_tick_data(ib: IB, c: Contract, delay: float = 6):
     """Gets tick-by-tick data
 
@@ -386,20 +531,22 @@ async def get_tick_data(ib: IB, c: Contract, delay: float = 6):
     return ticker
 
 
-async def get_market_data(ib: IB, c: Contract, sleep: float = 2):
-
-    """Gets market price with implied volatility. Works also in closed market.
+async def get_market_data(ib: IB, c: Contract,
+                          sleep: float = 2,
+                          gentick: str='106, 104'):
+    """For a contract, gets market price with implied volatility.
 
     Args:
-        ib (IB): IB instance
-        c (Contract): a contract
-        sleep (float, optional): delay to fill. Defaults to 2 secs.
+        ib (IB): Live IB connection
+        c (Contract): An IB contract
+        sleep (float, optional): delay to fill. Defaults to 2.
+        gentick (str, optional): iv:106 | hv:104. Defaults to '106, 104'.
 
     Returns:
-        _type_: IB tick_
+        _type_: _description_
     """
 
-    tick = ib.reqMktData(c, genericTickList="106")
+    tick = ib.reqMktData(c, genericTickList=gentick)
     try:
         await asyncio.sleep(sleep)
     finally:
@@ -408,56 +555,34 @@ async def get_market_data(ib: IB, c: Contract, sleep: float = 2):
     return tick
 
 
-async def get_a_price_iv(ib, contract, sleep: float = 2) -> dict:
-    """[async] Computes price and IV of a contract.
+async def get_a_price_iv(ib:IB, data: Contract|Option|Stock, sleep: float = 2, gentick: str='106, 104') -> dict:
+    """Computes price and ivs of a contract. Picks `close` price in closed market.
 
-    OUTPUT: dict{localsymbol, price, iv}
+    Args:
+        ib (IB): Active IB connection
+        data (Contract | Option | Stock): an IB contract
+        sleep (float, optional): Defaults to 2.
+        gentick (str, optional): iv:106 | hv:104. Defaults to '106'.
 
-    Could take up to 12 seconds in case live prices are not available"""
+    Returns:
+        dict: {'localsymbol': str, 'iv': float, 'hv':float}
+    """
 
-    mkt_data = await get_market_data(ib, contract, sleep)
-    undPrice = mkt_data.marketPrice()
+    mkt_data = await get_market_data(ib, data, sleep, gentick)
+    data = mkt_data.__dict__
+
+    price_dict = {k: v for k, v in data.items() if k in ['close', 'last']}
+    localSymbol = data.get('contract').localSymbol
+
+    undPrice = price_dict.get('last') if not pd.isnull(price_dict.get('last')) else price_dict.get('close')
+    iv = data.get('impliedVolatility')
+    hv = data.get('histVolatility')
 
     if math.isnan(undPrice):
-        undPrice = mkt_data.close
-        if math.isnan(undPrice):
-            tick_data = await get_tick_data(ib, contract)
-            tick_data_price = tick_data[0].marketPrice()
-            undPrice = (
-                tick_data_price
-                if not math.isnan(tick_data_price)
-                else tick_data[0].close
-            )
-            if math.isnan(undPrice):
-                logger.info(f"No price found for {contract.localSymbol}!")
+        logger.info(f"No price found for {localSymbol}!")
 
-    iv = mkt_data.impliedVolatility
-    return {"localsymbol": contract.localSymbol, "price": undPrice, "iv": iv}
+    return {"localsymbol": localSymbol, "price": undPrice, "iv": iv, "hv": hv}
 
-
-async def get_mkt_prices(
-   ib:IB, contracts: list, chunk_size: int = 44, sleep: int = 7
-) -> pd.DataFrame:
-    """[async] A faster way to get market prices."""
-
-    contracts = to_list(contracts)
-    chunks = chunk_me(contracts, chunk_size)
-    results = dict()
-
-    for cts in tqdm(chunks, desc="Mkt prices with IVs"):
-        tasks = [get_a_price_iv(ib, c, sleep) for c in cts]
-        res = await asyncio.gather(*tasks)
-
-        for r in res:
-            symbol, price, iv = r.values()
-            results[symbol] = (price, iv)
-
-    df_prices = split_symbol_price_iv(results)
-    df_prices = pd.merge(
-        clean_ib_util_df(contracts), df_prices, on="ib_symbol"
-    )
-
-    return df_prices
 
 # * --- ORDER HANDLING ---
 

@@ -8,8 +8,9 @@ from loguru import logger
 from tqdm import tqdm
 from ib_async import IB, MarketOrder, Option
 
+from ibfuncs import qualify_me
 from nse import NSEfnos, equity_iv_df
-from utils import make_contracts_orders
+from utils import chunk_me, make_contracts_orders
 
 
 def make_raw_fno_df(fnos) -> pd.DataFrame:
@@ -131,3 +132,26 @@ def get_ib_margin_comms(df: pd.DataFrame, port: int) -> pd.DataFrame:
     df_opts = df_opts.assign(secType=df_opts.contract.apply(lambda s: s.secType))
 
     return df_opts
+
+
+async def qualify_in_chunks(ib: IB, contracts: list, chunk_size: int = 200, desc: str = "qualifying chunk"):
+    """
+    Qualify a list of contracts in chunks using the `qualify_me()` function.
+
+    Args:
+        ib (IB): An instance of the IB class.
+        contracts (list): A list of contracts to be qualified.
+        chunk_size (int, optional): The size of each chunk. Defaults to 200.
+        desc (str, optional): The description to be used in the tqdm progress bar. Defaults to "Qualifying contracts".
+
+    Returns:
+        list: The qualified contracts.
+    """
+    chunks = chunk_me(contracts, chunk_size)
+    qualified_contracts = []
+
+    for chunk in tqdm(chunks, desc=desc):
+        qualified_chunk = await qualify_me(ib, chunk)
+        qualified_contracts.extend(qualified_chunk)
+
+    return qualified_contracts

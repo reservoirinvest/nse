@@ -56,7 +56,7 @@ MINEXPROM = config.get("MINEXPROM")
 # maps  for nifty and bank nifty
 IDXHISTSYMMAP = config.get("IDXHISTSYMMAP")
 
-# --- NSE CLASSES, METHODS AND DECORATORS ---
+# * --- NSE CLASSES, METHODS AND DECORATORS ---
 
 
 def live_cache(app_name):
@@ -357,7 +357,7 @@ def repo_rate():
     return float(rbi)
 
 
-# *------ CORE NSE FUNCTIONS ----
+# * ------ CORE NSE FUNCTIONS ----
 
 def make_earliest_nse_nakeds(
     fnos: Union[List, set], save: bool = False
@@ -401,6 +401,9 @@ def make_earliest_nse_nakeds(
 
                 if save and not df.empty:
                     pickle_me(df, ROOT / "data" / "raw" / filename)
+
+                    nse_lots = df.groupby('ib_symbol').lot.first().to_dict()
+                    pickle_me(nse_lots, ROOT / "data"/"nse_lots.pkl")
 
             else:
                 df = dfs
@@ -737,6 +740,7 @@ def make_date_range_for_stock_history(
     ]
 
     return ranges
+
 
 
 def equity_iv_df(quotes: dict) -> pd.DataFrame:

@@ -1,6 +1,7 @@
 # --- SNP SPECIFIC FUNCTIONS ---
 # ===============================
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,7 @@ from from_root import from_root
 from ib_async import Index, Stock
 from ibfuncs import get_ib, get_mkt_prices, qualify_me
 from utils import clean_ib_util_df, get_pickle, load_config, pickle_me
+import pandas_datareader.data as web
 
 MARKET = 'SNP'
 ROOT = from_root()
@@ -20,11 +22,11 @@ config = load_config(MARKET=MARKET)
 PUTSTDMULT = config.get("PUTSTDMULT")
 CALLSTDMULT = config.get("CALLSTDMULT")
 
-PORT = port = config.get("PORT")
+# PORT = port = config.get("PORT")
 
 indexes_path = ROOT / "data" / "templates" / "snp_indexes.yml"
 
-# --- ASSEMBLE ---------
+# * --- ASSEMBLE ---------
 
 
 def read_weeklys() -> pd.DataFrame:
@@ -167,16 +169,29 @@ def assemble_snp_underlyings(LIVE: bool=True,
             dfc = clean_ib_util_df(qualified_contracts)
             df = ib.run(get_mkt_prices(ib,
                                        dfc.contract,
+                                       sleep=15,
                                        chunk_size=39))
-            df.rename(columns={'conId': 'undId'}, inplace=True)
+            df.rename(columns={'conId': 'undId', 'iv': 'und_iv', 
+                               'hv': 'und_hv', 'price': 'undPrice'}, inplace=True)
 
         pickle_me(df, undpath)
 
     return df
 
 
+def us_repo_rate():
+    """Risk free US interest rate
+
+    Returns:
+        _type_: float (5.51)
+
+    """
+    tbill_yield = web.DataReader('DGS1MO', 'fred', start=datetime.now() -
+                                 timedelta(days=365), end=datetime.now())['DGS1MO'].iloc[-1]
+    return tbill_yield
+
 if __name__ == "__main__":
 
-    und_contracts = assemble_snp_underlyings()
-    print(und_contracts.head())
+    r = us_repo_rate()
+    print(f"repo_rate is {r} that is of type{type(r)}")
 
