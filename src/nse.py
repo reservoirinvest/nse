@@ -436,7 +436,7 @@ def order_nse_nakeds() -> Union[None, pd.DataFrame]:
     file_path = ROOT / 'data' / 'nse_nakeds.pkl'
 
     ## Check the age of df_pickles, before ordering
-    txt = f"df_nakeds.pkl is {how_many_days_old(file_path): 0.2f}. Want to load?"
+    txt = f"df_nakeds.pkl is {how_many_days_old(file_path): 0.2f} days old. Want to load?"
     ans = yes_or_no(txt)
 
     if ans:
@@ -530,7 +530,7 @@ def make_early_opts_for_nse_symbol(
 
     # Get margins with approrpriate timeout and append
     with IB().connect(port=port) as ib:
-        df_mcom = ib.run(marginsAsync(ib=ib, df=df, timeout=timeout))
+        df_mcom = ib.run(marginsAsync(ib=ib, data=df, timeout=timeout))
 
     df = merge_and_overwrite_df(df, df_mcom)
 

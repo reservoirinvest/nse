@@ -19,7 +19,7 @@ from loguru import logger
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
 
-from utils import (chunk_me, clean_ib_util_df, convert_to_utc_datetime, get_dte, get_port, load_config, pickle_me, split_symbol_price_iv, to_list)
+from utils import (chunk_me, clean_ib_util_df, convert_to_utc_datetime, empty_the_df, get_dte, get_port, load_config, pickle_me, split_symbol_price_iv, to_list)
 
 ROOT = from_root()
 dotenv_path = find_dotenv()
@@ -36,7 +36,7 @@ log_file = ROOT / "log" / str(__name__ + ".log")
 util.logToFile(log_file, level=level)
 open(log_file, "w").close()  # Wipe the logfile clean!
 
-# --- CLASSES AND THEIR METHODS
+# * --- CLASSES AND THEIR METHODS
 
 @dataclass
 class OpenOrder:
@@ -86,16 +86,86 @@ class Portfolio:
     def empty(self):
         return empty_the_df(self)
 
+# *--- MASS PROCESS IN CHUNKS ----
 
-def empty_the_df(df):
-    """Empty the dataclass df"""
-    empty_df = pd.DataFrame([df.__dict__]).iloc[0:0]
-    return empty_df
+async def process_in_chunks(ib: IB,
+                            data: any,
+                            func: callable = None,
+                            func_args: dict = None,
+                            chunk_size: int = 25,
+                            chunk_desc: str = "Processing chunk",
+) -> list:
+    """Processes functions in chunks.
+
+    Args:
+        ib (IB): A live connection
+        data (any): Single contract | list | pd.Series of contracts
+        func (callable, optional): The function to be processed. Defaults to None.
+        func_args (dict, optional): Arguments supplied to the function. Defaults to None.
+        chunk_size (int, optional): Size of processing. Defaults to 25.
+        chunk_desc (str, optional): Description while processing. Defaults to "Processing chunk".
+
+    Raises:
+        ValueError: _description_
+        TypeError: _description_
+        ValueError: _description_
+
+    Returns:
+        _type_: _description_
+    """
+    if not func:
+        raise ValueError("A function must be provided for processing the data.")
+        return None
+
+    if not func_args:
+        func_args = {}
+
+    chunks = chunk_me(data, chunk_size)
+    processed_data = []
+
+    for chunk in tqdm(chunks, desc=chunk_desc):
+        func_args["data"] = chunk
+
+        try:
+            # Attempt to process the chunk with the function
+            # print('First attempt...')
+            result = await func(ib, **func_args)
+            # print(result) # !!! TEMPORARY
+            processed_chunk = [result]
+
+        except AttributeError:
+
+            # If an error occurs, check if the function accepts unpacked data
+            try:
+                # Unpack the chunk and call the function again
+                # print(f'Second attempt due to {e}: {type(e)}')
+
+                if isinstance(chunk, (list, pd.Series)):
+                    tasks = []
+                    farg2 = func_args
+                    for item in chunk:
+                        farg2["data"] = item
+                        t = [func(ib, **farg2)]
+                        tasks.extend(t)
+                    result = await asyncio.gather(*tasks)
+                    processed_chunk = [clean_ib_util_df(chunk).join(pd.DataFrame(result)).drop(columns='localsymbol')]
+
+                else:
+                    # If the chunk is not iterable, raise an error
+                    raise TypeError(f"Invalid data type: {type(chunk)} for function {func.__name__}")
+
+            except Exception as e2:
+                # Raise a custom error if it still fails
+                raise ValueError(f"Function {func.__name__} does not accept data type {type(chunk)}, \nerror:{e2}") from e2
+
+        processed_data.extend(processed_chunk)
+
+    return processed_data
 
 
 # *---- QUALIFYING ----
 
-async def qualify_me(ib: IB, data: list, desc: str = "Qualifying contracts"):
+async def qualify_me(ib: IB, data: list, desc: str = "Qualifying contracts") -> list:
     """[async] Qualify contracts asynchronously"""
 
     data = to_list(data)  # to take care of single contract
@@ -243,7 +313,7 @@ def get_pf_margins(MARKET: str, save:bool=True) -> pd.DataFrame:
         pfc = ib.run(qualify_me(ib, pfc, desc='Qualifying portfolios'))
         df_pfm = df_pfm.assign(contract=pfc)
 
-        df_mcom = ib.run(marginsAsync(ib=ib, df=df_pfm, timeout=5))
+        df_mcom = ib.run(marginsAsync(ib=ib, data=df_pfm, timeout=5))
         df_mcom.comm = 20 if MARKET == 'NSE' else df_mcom.comm
         dfm = df_pfm.drop(columns=['order', 'action']).join(df_mcom.drop(columns='contract'))
         dfm.rename(columns={'symbol': 'ib_symbol'}, inplace=True, errors='ignore')
@@ -431,7 +501,7 @@ def margin_comm(r) -> dict:
 
 
 async def marginsAsync(
-    ib: IB, df: pd.DataFrame,
+    ib: IB, data: pd.DataFrame,
     timeout: float = 2,
     ) -> pd.DataFrame:
     """Gets async contracts from a df
@@ -447,14 +517,14 @@ async def marginsAsync(
         pd.DataFrame: df with ib_symbol, margin and comm
     """
     try:
-        contracts = df.contract.to_list()
-        orders = df.order.to_list()
+        contracts = data.contract.to_list()
+        orders = data.order.to_list()
     except ValueError as e:
         logging.error(f"df does not have contract or order.Error: {e}")
         return pd.DataFrame([])
 
     # qualify contracts if there is no conId
-    if df.contract.iloc[0].conId == 0:
+    if data.contract.iloc[0].conId == 0:
         await ib.qualifyContractsAsync(*contracts)
 
     cos = zip(contracts, orders)
@@ -555,13 +625,13 @@ async def get_market_data(ib: IB, c: Contract,
     return tick
 
 
-async def get_a_price_iv(ib:IB, data: Contract|Option|Stock, sleep: float = 2, gentick: str='106, 104') -> dict:
+async def get_a_price_iv(ib:IB, data: Contract|Option|Stock, sleep: float = 15, gentick: str='106, 104') -> dict:
     """Computes price and ivs of a contract. Picks `close` price in closed market.
 
     Args:
         ib (IB): Active IB connection
         data (Contract | Option | Stock): an IB contract
-        sleep (float, optional): Defaults to 2.
+        sleep (float, optional): Defaults to 15.
         gentick (str, optional): iv:106 | hv:104. Defaults to '106'.
 
     Returns:

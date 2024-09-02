@@ -28,7 +28,6 @@ indexes_path = ROOT / "data" / "templates" / "snp_indexes.yml"
 
 # * --- ASSEMBLE ---------
 
-
 def read_weeklys() -> pd.DataFrame:
     """gets weekly cboe symbols"""
 
@@ -156,7 +155,7 @@ def assemble_snp_underlyings(LIVE: bool=True,
     undpath = ROOT/'data'/'snp_unds.pkl'
     df = get_pickle(undpath)
 
-    if len(df) == 0 or FRESH:
+    if df is None or df.empty or FRESH:
         df = make_snp_weeklies(indexes_path).pipe(make_unqualified_snp_underlyings)
 
         contracts = df.contract.to_list()
@@ -189,6 +188,42 @@ def us_repo_rate():
     tbill_yield = web.DataReader('DGS1MO', 'fred', start=datetime.now() -
                                  timedelta(days=365), end=datetime.now())['DGS1MO'].iloc[-1]
     return tbill_yield
+
+
+def snp_marcom(df:pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate the maintenance margin and commissions for IBKR options using a DataFrame.
+    
+    Parameters:
+    - df: A pandas DataFrame with columns 'strike', 'undPrice', 'price', and 'right'.
+    
+    Returns:
+    - df: The original DataFrame with additional columns for maintenance margin and commission.
+    """
+    
+    # Calculate the in-the-money amount
+    df['itm'] = df.apply(lambda row: 
+                                         max(row['strike'] - row['undPrice'], 0) if row['right'] == 'P' 
+                                         else max(row['undPrice'] - row['strike'], 0), axis=1)
+
+    # Calculate maintenance margin based on option type
+    df['margin'] = df.apply(lambda row:
+                                        row['price'] + max(0.20 * (2 * row['undPrice']) - row['itm'], 0.10 * row['strike']) 
+                                        if row['right'] == 'P'
+                                        else row['price'] + max(0.15 * (3 * row['undPrice']) - row['itm'], 0.10 * row['strike']), axis=1)
+
+    # Adjust for lot size
+    df['margin'] *= 100
+
+    # Calculate commissions (fixed rate per contract of 100 lots)
+    commission_per_contract = 0.65
+    df['comm'] = commission_per_contract  # Fixed commission for each contract
+
+    df.drop(columns='itm', inplace=True)
+
+    # Return the updated DataFrame
+    return df
+
 
 if __name__ == "__main__":
 

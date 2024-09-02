@@ -7,7 +7,7 @@ import pickle
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, Iterable
 
 import numpy as np
 import pandas as pd
@@ -169,6 +169,22 @@ def catch(func, handle=lambda e : e, *args, **kwargs) -> Callable|None:
         logger.error(f"{func} gave error: {e}")
         return None
 
+def is_nested(lst):
+    """Checks if a list is nested.
+
+    Args:
+        lst: The list to check.
+
+    Returns:
+        True if the list is nested, False otherwise.
+    """
+
+    for item in lst:
+        if isinstance(item, list):
+            return True
+    return False
+
+
 # *--- FILE HANDLING ---
 
 
@@ -306,7 +322,7 @@ def how_many_days_old(file_path: Path) -> float:
     file_age = get_file_age(file_path=file_path)
 
     seconds_in_a_day = 86400
-    file_age_in_days = file_age.td.total_seconds() / seconds_in_a_day if file_age else 0
+    file_age_in_days = file_age.td.total_seconds() / seconds_in_a_day if file_age else None
 
     return file_age_in_days
 
@@ -352,6 +368,10 @@ def handle_nse_raws(pattern: str = ""):
 
 # *--- TRANSFORMING ---
 
+def empty_the_df(df):
+    """Empty the dataclass df"""
+    empty_df = pd.DataFrame([df.__dict__]).iloc[0:0]
+    return empty_df
 
 def to_list(data):
     """Converts any iterable to a list, and non-iterables to a list with a single element.
@@ -360,14 +380,26 @@ def to_list(data):
         data: The data to be converted.
 
     Returns:
-        A list containing the elements of the iterable, or a list with the single element if the input is not iterable.
+        A flattened list containing the elements of the iterable, or a list with the single element if the input is not iterable.
     """
+
+    if isinstance(data, list):
+        return list(flatten(data))
 
     try:
         return list(data)
     except TypeError:
         return [data]
 
+
+def flatten(items):
+    """Yield items from any nested iterable"""
+    for x in items:
+        if isinstance(x, Iterable) and not isinstance(x, (str, bytes)):
+            for sub_x in flatten(x):
+                yield sub_x
+        else:
+            yield x
 
 def split_dates(days: int = 365, chunks: int = 50) -> list:
     """Splits dates into buckets based on chunks.
@@ -425,16 +457,18 @@ def clean_ib_util_df(
 
     # Ensure contracts is a list
     if isinstance(contracts, pd.Series):
-        contracts = contracts.to_list()
+        ct = contracts.to_list()
     elif not isinstance(contracts, list):
         logger.error(
             f"Invalid type for contracts: {type(contracts)}. Must be list or pd.Series."
         )
         return None
+    else:
+        ct = contracts
 
     # Try to create DataFrame from contracts
     try:
-        udf = util.df(contracts)
+        udf = util.df(ct)
     except (AttributeError, ValueError) as e:
         logger.error(f"Error creating DataFrame from contracts: {e}")
         return None
@@ -466,7 +500,7 @@ def clean_ib_util_df(
         udf["expiry"] = pd.NaT
 
     # Assign contracts to DataFrame
-    udf["contract"] = contracts
+    udf["contract"] = ct
 
     return udf
 
@@ -819,13 +853,6 @@ def append_xPrice(df: pd.DataFrame, MINEXPROM: float) -> pd.DataFrame:
 
     # remove order column
     df = df.drop(columns=["order"], errors="ignore")
-
-    # # get maxprice
-    # maxPrice = np.maximum(df.price, df.bsPrice)
-
-    # # get expected price
-    # xPrice = (df.intrinsic + maxPrice).apply(lambda x: max(get_prec(x, 0.05), 0.05))
-    # df = df.assign(xPrice=xPrice)
 
     # get xPrice
     df = get_xPrice(df)

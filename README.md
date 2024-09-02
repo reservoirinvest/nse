@@ -9,6 +9,7 @@
 * tqdm for marginsAsync() with chunk_me
 
 # To-do
+- [ ] Debug `get_a_price_iv()` for block for qualified contracts in `snp_nakeds.ipynb`
 - [ ] Build target options for snp.
 
 ## For SNP
@@ -18,16 +19,15 @@
    - [x] Get `targets` with the closest `strikes` PUTS with `undPrice` for each dte
    - [x] Make `safe_strike` of the chains with STDMULTs for the closest
    - [x] Get the option price from Black Scholes
-   - [ ] Rectify `process_in_chunks()` to identify errors for mass processing (like qualify_me)
-   - [ ] Get the market option price
-   - [ ] Make the xPrice with
+   - [x] Rectify `process_in_chunks()` to identify errors for mass processing (like qualify_me)
+   - [x] Get the market option price
+   - [x] Make the xPrice with
        - * safe_strike - undPrice + strike + Black Scholes for Calls
        - * undPrice - safe_strike + strike + Black Scholes for Puts
-   - [ ] Get the margins and commissions for the targets
-       - * for those with zero margins compute margins at 20% of stock price
-   - [ ] get earliest margins for `snp_unds` from the chains. Integrate it in make_chains()
-   - [ ] `targets()` with appropriate standard deviation safe_strike and xPrice
-   - [ ] `order_snp_nakeds()`
+   - [x] Get the margins and commissions for the targets
+   - [x] `targets()` with appropriate standard deviation safe_strike and xPrice
+   - [ ] Wrap all the above to `make_snp_nakeds()` with save
+   - [ ] Make `order_snp_nakeds()`
 
 - [ ] Option to pick up margins from offline
 - [ ] Extend to expiries beyond earliest for `nse`
