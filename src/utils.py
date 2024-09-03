@@ -437,7 +437,8 @@ def chunk_me(data, size: int = 25) -> list:
     """
 
     if isinstance(data, (list, pd.Series, pd.DataFrame)):
-        return [data[i : i + size] for i in range(0, len(data), size)]
+        d = list(flatten(data))
+        return [d[i : i + size] for i in range(0, len(d), size)]
     elif isinstance(data, set):
         data_list = list(data)
         return [data_list[i : i + size] for i in range(0, len(data_list), size)]

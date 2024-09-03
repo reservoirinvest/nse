@@ -133,7 +133,7 @@ async def process_in_chunks(ib: IB,
             # print(result) # !!! TEMPORARY
             processed_chunk = [result]
 
-        except AttributeError:
+        except (AttributeError, ValueError) as e:
 
             # If an error occurs, check if the function accepts unpacked data
             try:
