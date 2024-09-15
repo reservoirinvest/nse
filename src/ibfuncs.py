@@ -774,9 +774,17 @@ def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
              "symbol": "ib_symbol"}, axis="columns", inplace=True
         )
 
-        trades_cols = df_openords.columns
+        # print("Available columns:", all_trades_df.columns)  # Debug print
+        # print("trades_cols:", df_openords.columns)  # Debug print
 
-        dfo = all_trades_df[trades_cols]
+        # Check if 'symbol' is in the DataFrame, if not, try to find an alternative
+        if 'symbol' not in all_trades_df.columns:
+            if 'contract' in all_trades_df.columns:
+                all_trades_df['symbol'] = all_trades_df['contract'].apply(lambda x: x.symbol)
+            else:
+                raise ValueError("Neither 'symbol' nor 'contract' column found in the DataFrame")
+
+        dfo = all_trades_df[df_openords.columns]
 
         if is_active:
             dfo = dfo[dfo.status.isin(ACTIVESTATUS)]

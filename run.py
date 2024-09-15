@@ -1,13 +1,15 @@
 import os
+from typing import List, Optional, Union
+
 import click
-from typing import Union
 import pandas as pd
 from ib_async import IB
 from loguru import logger
+
 from ibfuncs import account_values, get_open_orders, quick_pf
 from nse import get_fnos, make_earliest_nse_nakeds, order_nse_nakeds
-from utils import clean_symbols, pretty_print_df, get_port
-
+from snp import make_snp_naked_puts, place_snp_orders
+from utils import choose_market, clean_symbols, get_port, pretty_print_df
 
 # Ensure the log directory exists
 log_dir = './log'
@@ -16,94 +18,80 @@ os.makedirs(log_dir, exist_ok=True)
 # Configure logger to log to a file named after the script
 logger.add(f"{log_dir}/run.log", rotation="1 MB")
 
-def nse_nakeds(save: bool, fnos: Union[list, str, None]) -> pd.DataFrame:
-    """Generates nakeds for NSE
-
-    Args:
-        save (bool): Pickles to `data/raw`
-        fnos (Union[list, str, None]): If fno or a list doesn't save
-
-    Returns:
-        pd.DataFrame: Naked options df
-    """
-    df = pd.DataFrame()  # Initialize df to avoid reference before assignment error
-
-    if fnos: # prevents saving if fnos are given
+def nse_nakeds(save: bool, fnos: Optional[Union[list, str]] = None) -> pd.DataFrame:
+    """Generates nakeds for NSE"""
+    if fnos:
         save = False
 
     fnos = get_fnos(fnos)
 
-    # Make the nakeds
     try:
         df = make_earliest_nse_nakeds(fnos, save=save)
+        if not df.empty:
+            df_print = df.drop(columns=['contract', 'expiry', 'instrument', 'ib_symbol'], errors='ignore')
+            pretty_print_df(df_print.groupby('nse_symbol').head(2).iloc[:10])
     except Exception as e:
         logger.error(f"Error in make_earliest_nakeds: {e}")
-        df = pd.DataFrame([]) # empty df
-
-    # Print a small sample upon success
-    if not df.empty:
-        df_print = df.drop(columns=['contract', 'expiry', 'instrument', 'ib_symbol'], errors='ignore')
-        df_print = df_print.groupby('nse_symbol').head(2).iloc[:10]
-        pretty_print_df(df_print)
+        df = pd.DataFrame()
 
     return df
 
-def get_portfolio(port: int, clientId: int=10) -> pd.DataFrame:
-    """Gets portfolio. Needs IB-TWS or IBG to be running.
+def snp_nakeds(save: bool = True) -> pd.DataFrame:
+    """Generates naked puts for SNP"""
+    try:
+        df = make_snp_naked_puts(save=save)
+        if not df.empty:
+            df_print = df.drop(columns=['contract', 'expiry', 'instrument', 'ib_symbol'], errors='ignore')
+            pretty_print_df(df_print.head(10))
+    except Exception as e:
+        logger.error(f"Error in make_snp_naked_puts: {e}")
+        df = pd.DataFrame()
 
-    Args:
-        port (int): `Live` port no
-        clientId (int, optional): Client ID. Defaults to 10.
+    return df
 
-    Returns:
-        pd.DataFrame: Portfolio df
-    """
+def order_snp_nakeds():
+    """Prepares and places SNP naked put orders"""
+
+    place_snp_orders()
+
+    # try:
+    #     df_nakeds, cos = place_snp_orders()
+    #     if df_nakeds is not None and cos is not None:
+    #         place_snp_orders(df_nakeds, cos)
+    #     else:
+    #         print("No orders to place.")
+    # except Exception as e:
+    #     logger.error(f"Error in order_snp_nakeds: {e}")
+
+def get_portfolio(port: int, clientId: int = 10) -> pd.DataFrame:
+    """Gets portfolio. Needs IB-TWS or IBG to be running."""
     with IB().connect(port=port, clientId=clientId) as ib:
-        df = quick_pf(ib=ib)
-        df = df.drop(columns='contract')
-        pretty_print_df(df)
+        df = quick_pf(ib=ib).drop(columns='contract')
+
     return df
 
-
-def get_nlv(port: int, clientId: int=10) -> dict:
-    """Gets NLV, cusion and margins
-
-    Args:
-        port (int): IB port
-        clientId (int, optional): Client ID. Defaults to 10.
-
-    Returns:
-        dict: _description_
-    """
+def get_nlv(port: int, clientId: int = 10) -> dict:
+    """Gets NLV, cushion and margins"""
     with IB().connect(port=port, clientId=clientId) as ib:
         nlv = ib.run(account_values(ib))
-        print(nlv)
+    return nlv
 
-def get_orders(symbols: Union[str, list, None],
-              active: bool,
-              port: int,
-              cid:int) -> pd.DataFrame:
-    """Gets all open orders. Needs IB-TWS or IBG to be running.
-    Args:
-       active: if True shows only ACTIVE orders:
-       pending, pendingSubmit, presubmit and submitted
-       port: Port of active IB client
-       cid: Set as 10 for all API orders
-
-    Returns:
-       pd.DataFrame: Order df
-    """
+def get_orders(symbols: Optional[Union[str, list]] = None,
+               active: bool = False,
+               port: int = None,
+               cid: int = 10) -> pd.DataFrame:
+    """Gets all open orders. Needs IB-TWS or IBG to be running."""
+    if not port:
+        port = get_port(choose_market().upper())
     with IB().connect(port=port, clientId=cid) as ib:
-        df = get_open_orders(ib=ib, is_active=active)
-        df = df.drop(columns=['contract', 'order'], errors='ignore')
+        df = get_open_orders(ib=ib, is_active=active).drop(columns=['contract', 'order'], errors='ignore')
 
-        # clean up the symbols if provided
         if symbols:
-            symbols = clean_symbols(symbols)
-            df = df[df.symbol.isin(symbols)]
+            df = df[df.symbol.isin(clean_symbols(symbols))]
 
-        pretty_print_df(df)
-
+        # Limit to first 5 rows
+        df_display = df.head(5)
+        pretty_print_df(df_display)
     return df
 
 def market_selection():
@@ -125,49 +113,68 @@ def market_selection():
         click.echo("Invalid choice. Please select 1 or 2.")
         return market_selection()
 
-@click.command()
-@click.option('--function', '--f',
-              type=click.Choice(['get_orders', 'get_portfolio', 'get_nlv',
-                                    'nse_nakeds', 'nse_order_place'],
-                                        case_sensitive=False),
-                                        required=True,
-                                        help='Function to execute.')
-@click.option('--save',  is_flag=True, default=True, help='Pickles to `data/raw` if set (only for nse_nakeds).')
-@click.option('--fnos', type=str, multiple=True, help='FNOs as a list of strings or a single string. Use comma to separate multiple values (only for nse_nakeds).')
-@click.option('--market', '--m', type=click.Choice(['SNP', 'NSE'], case_sensitive=False), help='Choose market for port')
-@click.option('--clientid', type=int, default=10, help='Client ID for IB connection (default is 10).')
-@click.option('--active', is_flag=True, default=False, help='If set, shows only ACTIVE orders (only for get_orders).')
-@click.option('--symbols', type=str, multiple=True, help='Symbols to filter orders (only for get_orders).')
-def cli(function, save, fnos, market, clientid, active, symbols):
+@click.group()
+def cli():
     """Command line interface for IBKR option functions."""
+    pass
 
-    if function == 'nse_nakeds':
-        # Convert fnos to a list if it is provided
-        fnos_list = list(fnos) if fnos else None
-        nse_nakeds(save, fnos_list)
+@cli.command()
+@click.option('--save', is_flag=True, default=True, help='Pickle results to `data/raw`.')
+@click.option('--fnos', type=str, multiple=True, help='FNOs as a list of strings or a single string. Use comma to separate multiple values.')
+def nse_naked_options(save, fnos):
+    """Generate nakeds for NSE."""
+    nse_nakeds(save, list(fnos) if fnos else None)
 
-    elif function == 'nse_order_place':
-        order_nse_nakeds()
+@cli.command()
+@click.option('--save', is_flag=True, default=True, help='Pickle results to `data/raw`.')
+def snp_naked_puts(save):
+    """Generate naked puts for SNP."""
+    snp_nakeds(save)
 
-    elif function == 'get_orders':
-        if market is None:
-            market = market_selection()
-        port = get_port(market.upper())
-        symbols_list = list(symbols) if symbols else None
-        get_orders(symbols_list, active, port, clientid)
+@cli.command()
+def nse_order_place():
+    """Place NSE naked orders."""
+    order_nse_nakeds()
 
-    elif function == 'get_portfolio':
-        if market is None:
-            market = market_selection()
-        port = get_port(market.upper())
-        get_portfolio(port, clientid)
+@cli.command()
+def snp_order_place():
+    """Place SNP naked put orders."""
+    place_snp_orders()
 
-    elif function == 'get_nlv':
-        if market is None:
-            market = market_selection()
-        port = get_port(market.upper())
-        get_nlv(port=port, clientId=clientid)
+@cli.command()
+@click.option('--market', type=click.Choice(['snp', 'nse'], case_sensitive=False), help='Choose market for port')
+@click.option('--clientid', type=int, default=10, help='Client ID for IB connection (default is 10).')
+@click.option('--active', is_flag=True, default=False, help='If set, shows only ACTIVE orders.')
+@click.option('--symbols', type=str, multiple=True, help='Symbols to filter orders.')
+def openorders(market, clientid, active, symbols):
+    """Get open orders."""
+    if not market:
+        market = choose_market()
+    port = get_port(market.upper())
+    get_orders(list(symbols) if symbols else None, active, port, clientid)
 
+@cli.command()
+@click.option('--market', type=click.Choice(['snp', 'nse'], case_sensitive=False), help='Choose market for port')
+@click.option('--clientid', type=int, default=10, help='Client ID for IB connection (default is 10).')
+def portfolio(market, clientid):
+    """Get portfolio."""
+    if not market:
+        market = choose_market()
+    port = get_port(market.upper())
+    result = get_portfolio(port, clientid)
+    if isinstance(result, pd.DataFrame) and not result.empty:
+        pretty_print_df(result)
+
+@cli.command()
+@click.option('--market', type=click.Choice(['snp', 'nse'], case_sensitive=False), help='Choose market for port')
+@click.option('--clientid', type=int, default=10, help='Client ID for IB connection (default is 10).')
+def nlv(market, clientid):
+    """Get NLV, cushion and margins."""
+    if not market:
+        market = choose_market()
+    port = get_port(market.upper())
+    result = get_nlv(port, clientid)
+    print(result)
 
 if __name__ == '__main__':
     cli()

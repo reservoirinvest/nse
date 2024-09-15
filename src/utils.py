@@ -391,7 +391,6 @@ def to_list(data):
     except TypeError:
         return [data]
 
-
 def flatten(items):
     """Yield items from any nested iterable"""
     for x in items:
@@ -766,7 +765,19 @@ def append_black_scholes(df: pd.DataFrame, risk_free_rate: float) -> pd.DataFram
     K = df["strike"].values
     T = df["dte"].values / 365  # Convert days to years
     r = risk_free_rate
-    sigma = df["iv"].values
+
+    # Compute sigma based on available volatility measures
+    if 'iv' in df.columns and not df['iv'].isna().all():
+        sigma = df['iv'].values
+    elif 'und_iv' in df.columns:
+        sigma = df['und_iv'].values
+    elif 'und_hv' in df.columns:
+        sigma = df['und_hv'].values
+    elif 'hv' in df.columns:
+        sigma = df['hv'].values
+    else:
+        sigma = np.full_like(df['undPrice'].values, np.nan)
+
     option_type = df["right"].values
 
     # Calculate d1 and d2
@@ -1057,6 +1068,17 @@ def split_and_uppercase(s):
     # Return an empty list if the input is neither a list, tuple, set, nor string
     return []
 
+
+def strip_split(s: str) -> str:
+    """Splits and strips a string
+
+    Args:
+        s (str): input string to be split
+
+    Returns:
+        str: output string for pandas columns
+    """
+    return [e.strip() for e in s.split(',')]
 
 # *--- TEST BENCH ---
 

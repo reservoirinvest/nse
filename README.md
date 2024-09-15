@@ -6,33 +6,17 @@
 4. Class (OOP) based with stock and option bots
 
 ## Making now...
-* tqdm for marginsAsync() with chunk_me
+- [ ] `z_covers.py` - Debug SNP covered calls and puts with standard deviation with RoIC extraction based on average price.
+- [ ] Give appropriate tqdm message for `make_chains()` in `get_covered_calls()`
+- [ ] Make place orders for covers and integrate in run.py
+- [ ] Check why snp-order-place is not placing all the 1563 options. It placed only 335 orders.
+- [ ] Check why some orders are repeated with the same dte in orders placed.
 
-# To-do
-- [ ] Debug `get_a_price_iv()` for block for qualified contracts in `snp_nakeds.ipynb`
-- [ ] Build target options for snp.
-
-## For SNP
-- [ ] For target opts `snp_nakeds()` for `snp.py` with:
-   - [x] Make `unds` with `iv` and `price`
-   - [x] Make `chains` from the unds
-   - [x] Get `targets` with the closest `strikes` PUTS with `undPrice` for each dte
-   - [x] Make `safe_strike` of the chains with STDMULTs for the closest
-   - [x] Get the option price from Black Scholes
-   - [x] Rectify `process_in_chunks()` to identify errors for mass processing (like qualify_me)
-   - [x] Get the market option price
-   - [x] Make the xPrice with
-       - * safe_strike - undPrice + strike + Black Scholes for Calls
-       - * undPrice - safe_strike + strike + Black Scholes for Puts
-   - [x] Get the margins and commissions for the targets
-   - [x] `targets()` with appropriate standard deviation safe_strike and xPrice
-   - [ ] Wrap all the above to `make_snp_nakeds()` with save
-   - [ ] Make `order_snp_nakeds()`
-
-- [ ] Option to pick up margins from offline
+## For NSE
 - [ ] Extend to expiries beyond earliest for `nse`
 
 ## General utilities
+- [ ] Option to pick up margins from offline
 - [ ] modify an order - from df_nakeds
 - [ ] cancel an order function from df_nakeds if it is ACTIVE
 
@@ -52,8 +36,8 @@
 1. Every valid symbol should have at least one order in the system
 2. A Symbol without an underlying position should have one naked order
 3. An Underlying position should have two options:
-   - For Put shorts: a Covered Call sell and a Protective Put buy position
-   - For Call Shorts:  a Covered Put sell and a Protective Call buy position
+   - For Underlying Put shorts: a Covered Call sell. There is no need for a Protective Put.
+   - For Underlying Call Shorts:  a Covered Put sell and a Protective Call buy position
 4. Put and Call buys without underlying positions are `orphaned`. They should have closing orders.
 
 ## Orchestrator
