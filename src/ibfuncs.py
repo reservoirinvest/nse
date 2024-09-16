@@ -93,7 +93,7 @@ async def process_in_chunks(ib: IB,
                             func: callable = None,
                             func_args: dict = None,
                             chunk_size: int = 25,
-                            chunk_desc: str = "Processing chunk",
+                            chunk_desc: str = "processing chunk...",
 ) -> list:
     """Processes functions in chunks.
 
@@ -386,8 +386,10 @@ async def get_an_option_chain(ib: IB, contract:Contract, timeout: int=2):
 
 async def get_option_chains(ib: IB,
                             contracts: list,
+                            msg: str,
                             chunk_size:int=20,
-                            timeout:float=4) -> list:
+                            timeout:float=4,
+                            ) -> list:
     """Gets a list of option chains
 
     Args:
@@ -402,7 +404,7 @@ async def get_option_chains(ib: IB,
     option_chains = []
     total_contracts = len(contracts)
 
-    with tqdm(total=total_contracts, unit="contract") as pbar:
+    with tqdm(total=total_contracts, unit="contract", desc=msg) as pbar:
 
         for i in range(0, total_contracts, chunk_size):
             chunk = contracts[i: i+chunk_size]
@@ -417,8 +419,9 @@ def make_chains(df_unds: pd.DataFrame,
                 timeout: float=15,
                 chunks: int=15,
                 save: bool=False,
+                msg: str='Getting chains',
                 ) -> pd.DataFrame:
-    """_summary_
+    """makes option chains from ib
 
     Args:
         df_unds (pd.DataFrame): underlying df for a market
@@ -427,13 +430,13 @@ def make_chains(df_unds: pd.DataFrame,
         save (bool, optional): to pickle. Defaults to False.
 
     Returns:
-        pd.DataFrame: _description_
+        pd.DataFrame: option chains
     """
     MARKET = 'NSE' if df_unds.contract.iloc[0].exchange=='NSE' else 'SNP'
     und_contracts = df_unds.contract.to_list()
 
     with get_ib(MARKET) as ib:
-        chains = ib.run(get_option_chains(ib, und_contracts, timeout=timeout, chunk_size=chunks))
+        chains = ib.run(get_option_chains(ib, und_contracts, timeout=timeout, chunk_size=chunks, msg=msg))
 
     # Clean the chains
     df_chains = util.df([c for c in chains if c is not None])
