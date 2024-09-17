@@ -752,6 +752,7 @@ def cancel_all_orders(ib: IB) -> list:
 
     return cancels
 
+
 def get_open_orders(ib, is_active: bool = False) -> pd.DataFrame:
     """Gets open orders - blocking version"""
 

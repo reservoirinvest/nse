@@ -3,11 +3,11 @@ import pandas as pd
 from from_root import from_root
 from ib_async import Contract, util
 
-from ibfuncs import (get_a_price_iv, get_ib, make_chains, process_in_chunks,
+from ibfuncs import (get_a_price_iv, get_ib, get_open_orders, make_chains, process_in_chunks,
                      qualify_me, quick_pf)
 from snp import assemble_snp_underlyings, us_repo_rate
 from utils import (append_black_scholes, get_xPrice,
-                   how_many_days_old, load_config, pretty_print_df)
+                   how_many_days_old, load_config, pickle_me, pretty_print_df)
 
 # Constants and Configuration
 ROOT = from_root()
@@ -50,13 +50,38 @@ def process_options(positions: pd.DataFrame, right: str) -> pd.DataFrame:
     df_options = calculate_safe_strike(df_options, right)
     df_options = get_option_prices(df_options)
 
+    # Keep only the options with strike price closest to safe_strike
+    df_options['strike_diff'] = abs(df_options['strike'] - df_options['safe_strike'])
+    df_options = df_options.loc[df_options.groupby('ib_symbol')['strike_diff'].idxmin()]
+
+    # Remove the temporary 'strike_diff' column
+    df_options = df_options.drop('strike_diff', axis=1)
+
+    # Remove any remaining duplicates based on 'ib_symbol'
+    df_options = df_options.drop_duplicates(subset=['ib_symbol'], keep='first')
+
+    # Reset the index to ensure it's continuous
+    df_options = df_options.reset_index(drop=True)
+
     return df_options
 
 def filter_options(df_opts: pd.DataFrame, right: str) -> pd.DataFrame:
     max_dte = config['CCCCP_MAX_DTE']
-    return df_opts[(df_opts['right'] == right) &
-                   (df_opts['dte'] > 4) &
-                   (df_opts['dte'] <= max_dte)].copy()
+    df_filtered = df_opts[(df_opts['right'] == right) &
+                          (df_opts['dte'] > 4) &
+                          (df_opts['dte'] <= max_dte)].copy()
+
+    with get_ib('SNP') as ib:
+        open_orders = get_open_orders(ib)
+
+    open_sell_options = open_orders[(open_orders['secType'] == 'OPT') &
+                                    (open_orders['action'] == 'SELL')]
+
+    symbols_with_open_orders = set(open_sell_options['symbol'])
+
+    df_filtered = df_filtered[~df_filtered['ib_symbol'].isin(symbols_with_open_orders)]
+
+    return df_filtered
 
 def calculate_safe_strike(df_options: pd.DataFrame, right: str) -> pd.DataFrame:
     stdmult = config['CALLSTDMULT'] if right == 'C' else config['PUTSTDMULT']
@@ -94,7 +119,9 @@ def get_option_prices(df_options: pd.DataFrame) -> pd.DataFrame:
 
     risk_free_rate = us_repo_rate() / 100
     df_options = append_black_scholes(df_options, risk_free_rate)
-    return get_xPrice(df_options)
+    df_options = get_xPrice(df_options)
+    df_options['xPrice'] = df_options['xPrice'].clip(lower=config['MINOPTPRICE'])
+    return df_options
 
 def generate_option_recommendations(df_options: pd.DataFrame) -> pd.DataFrame:
     df_options['maxProfit'] = (abs(df_options['undPrice'] - df_options['strike']) + df_options['xPrice'])*100
@@ -103,7 +130,12 @@ def generate_option_recommendations(df_options: pd.DataFrame) -> pd.DataFrame:
 # Main Functions
 def get_covered_calls(positions: pd.DataFrame) -> pd.DataFrame:
     df_options = process_options(positions, right='C')
-    return generate_option_recommendations(df_options)
+    df_options_with_cost = df_options.merge(positions[['symbol', 'avgCost']], 
+                                            left_on='ib_symbol', 
+                                            right_on='symbol', 
+                                            how='left')
+    df_options_with_cost = df_options_with_cost.drop(columns=['symbol'])
+    return generate_option_recommendations(df_options_with_cost)
 
 def get_cash_secured_puts(positions: pd.DataFrame) -> pd.DataFrame:
     return process_options(positions, right='P')
@@ -119,5 +151,6 @@ if __name__ == "__main__":
     stock_positions, _, covered_calls = process_positions()
 
     print(f"\nRecommended Covered Calls with total maxProfit of {covered_calls.maxProfit.sum():.0f}")
+    pickle_me(covered_calls, ROOT/'data'/'snp_covers.pkl' )
 
     pretty_print_df(covered_calls.drop(columns=['contract', 'iv', 'hv']))
